@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tor-location-manager"
+version = "1.0.0"
+description = "Multi-country Tor egress manager with automatic 3x-ui/Xray synchronization"
+requires-python = ">=3.10"
+dependencies = [
+  "Flask>=3.0,<4",
+  "gunicorn>=22,<24",
+  "requests[socks]>=2.32,<3",
+  "cryptography>=43,<46",
+]
+
+[tool.setuptools.packages.find]
+include = ["torpanel*"]
+
+[tool.setuptools.package-data]
+torpanel = ["templates/*.html", "static/*.css"]

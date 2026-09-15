@@ -1,36 +1,63 @@
 {% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
 {% block title %}اتصال و شبکه | Tor Location Manager{% endblock %}
 {% block content %}
-<section class="page-head"><div><div class="eyebrow">3X-UI API & TOR NETWORK</div><h1>اتصال به پنل اصلی</h1><p class="muted">اتصال 3x-ui و روش دسترسی Tor به شبکه را از همین صفحه مدیریت کنید.</p></div></section>
-<section class="panel">
-  <form method="post" class="stack">
-    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <label>آدرس کامل 3x-ui<input name="xui_base_url" value="{{ xui_base_url }}" placeholder="https://panel.example.com:2053/basepath" required><small>همان URL اصلی پنل، همراه با base path در صورت وجود. عبارت /panel/api را به انتهای آن اضافه نکنید.</small></label>
-    <label>API Token<input name="xui_api_token" type="password" placeholder="{{ 'ذخیره شده — برای تغییر مقدار جدید وارد کنید' if has_token else 'API Token' }}"><small>در 3x-ui از Settings → Security یک API Token فعال بسازید. مقدار خام توکن را وارد کنید؛ اگر Bearer را هم Paste کنید خودکار حذف می‌شود. توکن در این پنل رمزگذاری می‌شود و دوباره نمایش داده نمی‌شود.</small></label>
-    <label>IP یا دامنه این Tor Gateway<input name="gateway_host" value="{{ gateway_host }}" placeholder="tor1.example.com یا 203.0.113.10" required><small>این آدرس باید از سرور 3x-ui قابل دسترس باشد.</small></label>
-    <label>URL تست Outbound در 3x-ui<input name="xui_outbound_test_url" value="{{ xui_outbound_test_url }}"></label>
-    <label class="check"><input type="checkbox" name="xui_verify_tls" {% if xui_verify_tls %}checked{% endif %}> بررسی معتبر بودن TLS پنل 3x-ui</label>
-
-    <fieldset>
-      <legend>سازگاری Tor با شبکه‌های محدود / سرور ایران</legend>
-      <label>روش اتصال Tor
-        <select name="tor_transport_mode">
-          <option value="direct" {% if tor_transport_mode == 'direct' %}selected{% endif %}>Direct — اتصال مستقیم به شبکه Tor</option>
-          <option value="obfs4" {% if tor_transport_mode == 'obfs4' %}selected{% endif %}>obfs4 Bridge — مناسب شبکه‌هایی که Tor مستقیم مسدود است</option>
-        </select>
-        <small>روی سرور ایران ابتدا Direct را امتحان کنید. اگر Tor Bootstrap نمی‌شود، حالت obfs4 را انتخاب و Bridge معتبر وارد کنید.</small>
-      </label>
-      <label>obfs4 Bridgeها
-        <textarea name="tor_bridge_lines" rows="7" placeholder="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0">{{ tor_bridge_lines }}</textarea>
-        <small>هر Bridge در یک خط. می‌توانید خط را با Bridge obfs4 یا فقط obfs4 شروع کنید. این مقادیر فقط روی سرور ذخیره و در torrc هر Location اعمال می‌شوند.</small>
-      </label>
-    </fieldset>
-
-    <div class="actions"><button class="button primary" type="submit">ذخیره و اعمال</button></div>
-  </form>
-  <form method="post" action="{{ url_for('settings_test') }}" class="test-form"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">تست اتصال و دریافت Inbounds</button></form>
+<section class="page-head">
+  <div><div class="eyebrow">CONNECTION & NETWORK</div><h1>اتصال و شبکه</h1><p>3x-ui API، Gateway و روش اتصال Tor روی سرورهای عادی یا شبکه‌های محدود را مدیریت کنید.</p></div>
+  <form method="post" action="{{ url_for('settings_test') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('pulse') }} تست اتصال 3x-ui</button></form>
 </section>
-<section class="note"><strong>سرور ایران:</strong> Installer برای دانلود Xray و بروزرسانی‌ها ابتدا مسیرهای رسمی GitHub را امتحان می‌کند و در صورت مشکل از GitHub API Asset fallback استفاده می‌کند. همچنین Proxy و Release Mirror سفارشی پشتیبانی می‌شوند. برای خود شبکه Tor در صورت مسدود بودن اتصال مستقیم، از obfs4 Bridge استفاده کنید.</section>
-<section class="note"><strong>راهنمای خطا:</strong> خطای 401 یعنی خود توکن توسط 3x-ui پذیرفته نشده است؛ خطای 403 یعنی توکن معتبر است ولی سطح دسترسی کافی ندارد؛ خطای 404 معمولاً به معنی URL یا base path اشتباه است.</section>
-<section class="note"><strong>نحوه Sync:</strong> فقط Inbound/Outbound/Ruleهایی که با Tag اختصاصی <code>torloc-</code> ساخته شده‌اند توسط پروژه مدیریت می‌شوند و تنظیمات دستی دیگر 3x-ui دست‌نخورده می‌مانند.</section>
+
+<div class="connection-grid">
+  <section class="panel">
+    <div class="section-title"><div><h2>اتصال به 3x-ui</h2><p>API رسمی پنل برای ساخت و همگام‌سازی Inbound/Outboundها</p></div><span class="status {{ 'ok' if has_token and xui_base_url else 'warn' }}">{{ 'پیکربندی شده' if has_token and xui_base_url else 'ناقص' }}</span></div>
+    <form method="post" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label class="field"><span>آدرس کامل 3x-ui</span><input name="xui_base_url" value="{{ xui_base_url }}" placeholder="https://panel.example.com:2053/basepath" required><small>همان URL اصلی پنل همراه base path؛ عبارت <code>/panel/api</code> را اضافه نکنید.</small></label>
+      <label class="field"><span>API Token</span><input name="xui_api_token" type="password" autocomplete="new-password" placeholder="{{ 'توکن ذخیره شده — برای تغییر مقدار جدید وارد کنید' if has_token else 'API Token با scope=admin' }}"><small>توکن رمزگذاری می‌شود و بعد از ذخیره دوباره در UI نمایش داده نمی‌شود.</small></label>
+      <div class="two">
+        <label class="field"><span>IP یا دامنه Tor Gateway</span><input name="gateway_host" value="{{ gateway_host }}" placeholder="tor1.example.com یا 203.0.113.10" required><small>باید از سرور 3x-ui قابل دسترس باشد.</small></label>
+        <label class="field"><span>URL تست Outbound</span><input name="xui_outbound_test_url" value="{{ xui_outbound_test_url }}" placeholder="https://www.google.com/generate_204"><small>برای Health Check خروجی در 3x-ui.</small></label>
+      </div>
+      <label class="check check-card"><input type="checkbox" name="xui_verify_tls" {% if xui_verify_tls %}checked{% endif %}><span><b>اعتبار TLS پنل بررسی شود</b><small>برای HTTPS واقعی روشن بماند؛ فقط در محیط تست با گواهی self-signed خاموش کنید.</small></span></label>
+
+      <div class="form-section" style="padding:17px">
+        <div class="form-section-title"><span class="form-section-number">IR</span><div><h3>سازگاری Tor با سرور ایران / شبکه محدود</h3><p>Direct برای حالت عادی و obfs4 برای شبکه‌ای که bootstrap مستقیم Tor مسدود است.</p></div></div>
+        <div class="segmented">
+          <div class="segment-option"><input id="transportDirect" type="radio" name="tor_transport_mode" value="direct" {% if tor_transport_mode == 'direct' %}checked{% endif %}><label for="transportDirect">Direct<small>اتصال مستقیم و کم‌هزینه‌تر به شبکه Tor</small></label></div>
+          <div class="segment-option"><input id="transportObfs4" type="radio" name="tor_transport_mode" value="obfs4" {% if tor_transport_mode == 'obfs4' %}checked{% endif %}><label for="transportObfs4">obfs4 Bridge<small>برای سرور ایران یا شبکه‌ای که Tor مستقیم بسته است</small></label></div>
+        </div>
+        <div class="bridge-fields" data-bridge-fields data-hidden="{{ 'false' if tor_transport_mode == 'obfs4' else 'true' }}" style="margin-top:13px">
+          <label class="field"><span>Bridgeهای obfs4</span><textarea name="tor_bridge_lines" rows="7" class="mono" placeholder="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0">{{ tor_bridge_lines }}</textarea><small>هر Bridge یک خط. تعداد فعلی: {{ bridge_count }}. مقدار <code>Bridge </code> ابتدای خط اختیاری است.</small></label>
+          <div class="callout warning" style="margin-top:10px"><strong>نکته:</strong> فعال‌کردن Bridge بدون Bridge معتبر باعث می‌شود Tor instanceها بالا نیایند. پروژه قبل از اعمال، ساختار خطوط را بررسی می‌کند.</div>
+        </div>
+      </div>
+
+      <div class="actions"><button class="button primary" type="submit">{{ icon('check') }} ذخیره و اعمال تنظیمات</button></div>
+    </form>
+  </section>
+
+  <aside class="side-stack">
+    <section class="panel">
+      <div class="section-title"><div><h2>وضعیت فعلی</h2><p>خلاصه اتصال</p></div></div>
+      <div class="info-list">
+        <div class="info-row"><span class="mini-icon">{{ icon('link') }}</span><div><strong>3x-ui API</strong><small>{{ 'توکن ذخیره شده است' if has_token else 'API Token ثبت نشده' }}</small></div></div>
+        <div class="info-row"><span class="mini-icon">{{ icon('server') }}</span><div><strong>Gateway</strong><small>{{ gateway_host or 'آدرس Gateway مشخص نشده' }}</small></div></div>
+        <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>Tor Transport</strong><small>{{ 'obfs4 Bridge · ' ~ bridge_count ~ ' bridge' if tor_transport_mode == 'obfs4' else 'Direct' }}</small></div></div>
+        <div class="info-row"><span class="mini-icon">{{ icon('shield') }}</span><div><strong>TLS Validation</strong><small>{{ 'فعال' if xui_verify_tls else 'غیرفعال' }}</small></div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><div><h2>راهنمای خطا</h2><p>معنی پاسخ‌های رایج API</p></div></div>
+      <div class="quick-list">
+        <div class="callout"><strong>HTTP 401</strong><br>توکن اشتباه، حذف‌شده، غیرفعال یا منقضی است.</div>
+        <div class="callout"><strong>HTTP 403</strong><br>توکن معتبر است اما scope مدیریتی کافی ندارد.</div>
+        <div class="callout"><strong>HTTP 404</strong><br>URL یا Base Path پنل اشتباه وارد شده است.</div>
+        <div class="callout"><strong>Timeout</strong><br>مسیر شبکه، فایروال یا دسترسی بین دو سرور را بررسی کنید.</div>
+      </div>
+    </section>
+
+    <section class="status-banner success"><div class="status-icon">{{ icon('shield') }}</div><div><strong>Sync ایمن</strong><p>فقط Tagهای مدیریت‌شده با پیشوند <code>torloc-</code> تغییر می‌کنند و تنظیمات دستی دیگر دست‌نخورده می‌مانند.</p></div></section>
+  </aside>
+</div>
 {% endblock %}

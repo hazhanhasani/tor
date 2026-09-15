@@ -1,32 +1,67 @@
 {% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}لوکیشن‌ها | Tor Location Manager{% endblock %}
 {% block content %}
-<section class="hero">
-  <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌های Tor</h1><p>هر لوکیشن یک Tor مستقل، یک Inbound اختصاصی در 3x-ui، یک پورت Gateway رمزنگاری‌شده و یک Outbound/Route اختصاصی دارد.</p></div>
-  <div class="actions">
-    <a class="button primary" href="{{ url_for('location_new') }}">افزودن لوکیشن</a>
-    <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">بازسازی و Sync کامل</button></form>
+<section class="page-head">
+  <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌ها</h1><p>هر لوکیشن یک Tor مستقل، Inbound اختصاصی 3x-ui، Gateway رمزنگاری‌شده و Route خودکار دارد.</p></div>
+  <div class="page-actions">
+    <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} بازسازی و Sync</button></form>
+    <a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} افزودن لوکیشن</a>
   </div>
 </section>
-{% if not configured %}<div class="alert warning">هنوز 3x-ui متصل نشده است. ابتدا از بخش «اتصال 3x-ui» آدرس پنل، API Token و IP/دامنه این Gateway را ثبت کنید.</div>{% endif %}
-<div class="grid">
+
+{% if not configured %}
+<div class="status-banner warning" style="margin-bottom:16px"><div class="status-icon">{{ icon('link') }}</div><div><strong>اتصال 3x-ui کامل نشده است</strong><p>ابتدا URL پنل، API Token و آدرس Gateway را در بخش «اتصال و شبکه» ذخیره کنید.</p><a class="button small" style="margin-top:9px" href="{{ url_for('settings') }}">رفتن به تنظیمات</a></div></div>
+{% endif %}
+
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-icon">{{ icon('globe') }}</div><div><div class="value">{{ locations|length }}</div><div class="label">کل لوکیشن‌ها</div></div></div>
+  <div class="stat-card"><div class="stat-icon success">{{ icon('pulse') }}</div><div><div class="value">{{ locations|selectattr('active')|list|length }}</div><div class="label">در حال اجرا</div></div></div>
+  <div class="stat-card"><div class="stat-icon info">{{ icon('route') }}</div><div><div class="value">{{ locations|selectattr('enabled')|list|length }}</div><div class="label">فعال برای Sync</div></div></div>
+  <div class="stat-card"><div class="stat-icon warning">{{ icon('server') }}</div><div><div class="value">{{ countries|length }}</div><div class="label">کشور متفاوت</div></div></div>
+</div>
+
+{% if locations %}
+<div class="toolbar">
+  <div class="toolbar-filters">
+    <div class="search-box">{{ icon('search') }}<input type="search" data-location-search placeholder="جستجو نام، کشور، Tag یا پورت…" autocomplete="off"></div>
+    <select class="filter-select" data-status-filter aria-label="فیلتر وضعیت"><option value="all">همه وضعیت‌ها</option><option value="active">فعال</option><option value="stopped">متوقف</option></select>
+    <select class="filter-select" data-country-filter aria-label="فیلتر کشور"><option value="all">همه کشورها</option>{% for cc in countries %}<option value="{{ cc }}">{{ cc }}</option>{% endfor %}</select>
+  </div>
+  <span class="muted" style="font-size:11px"><b data-visible-count>{{ locations|length }}</b> مورد</span>
+</div>
+
+<div class="location-grid">
   {% for loc in locations %}
-  <article class="card">
-    <div class="card-head"><div><span class="country">{{ loc.country_code }}</span><h2>{{ loc.name }}</h2></div><span class="status {{ 'ok' if loc.active else 'off' }}">{{ 'فعال' if loc.active else 'متوقف' }}</span></div>
-    <dl>
-      <div><dt>3x-ui Inbound</dt><dd>{{ loc.xui_inbound_port if loc.xui_inbound_port else 'Auto / بعد از Sync' }}</dd></div>
-      <div><dt>Inbound Tag</dt><dd>torloc-in-{{ loc.slug }}</dd></div>
-      <div><dt>Outbound Tag</dt><dd>torloc-{{ loc.slug }}</dd></div>
-      <div><dt>Gateway Port</dt><dd>{{ loc.gateway_port }}</dd></div>
-      <div><dt>Tor SOCKS</dt><dd>127.0.0.1:{{ loc.socks_port }}</dd></div>
-      <div><dt>Inboundهای دستی اضافی</dt><dd>{{ loc.inbound_tags|join(', ') if loc.inbound_tags else '—' }}</dd></div>
-      <div><dt>وضعیت</dt><dd>{{ 'Enabled' if loc.enabled else 'Disabled' }}</dd></div>
-    </dl>
+  <article class="location-card" data-location-card data-status="{{ 'active' if loc.active else 'stopped' }}" data-country="{{ loc.country_code }}" data-search="{{ loc.name }} {{ loc.country_code }} {{ loc.slug }} {{ loc.gateway_port }} {{ loc.xui_inbound_port or '' }} torloc-in-{{ loc.slug }} torloc-{{ loc.slug }}">
+    <div class="location-head">
+      <div class="location-title"><span class="country-badge">{{ loc.country_code }}</span><div><h2>{{ loc.name }}</h2><span class="slug">{{ loc.slug }}</span></div></div>
+      <span class="status {{ 'ok' if loc.active else 'off' }}">{{ 'فعال' if loc.active else 'متوقف' }}</span>
+    </div>
+
+    <div class="location-route">
+      <div class="route-node"><b>3x-ui Inbound</b><span>{{ loc.xui_inbound_port or 'Auto' }}</span></div><span class="route-arrow">→</span>
+      <div class="route-node"><b>SS2022 Gateway</b><span>{{ loc.gateway_port }}</span></div><span class="route-arrow">→</span>
+      <div class="route-node"><b>Tor Exit {{ loc.country_code }}</b><span>SOCKS {{ loc.socks_port }}</span></div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-item"><span>Inbound Tag</span><strong class="ltr">torloc-in-{{ loc.slug }}</strong></div>
+      <div class="meta-item"><span>Outbound Tag</span><strong class="ltr">torloc-{{ loc.slug }}</strong></div>
+      <div class="meta-item"><span>Gateway Port</span><strong class="ltr">{{ loc.gateway_port }}/TCP</strong></div>
+      <div class="meta-item"><span>Inboundهای اضافی</span><strong>{{ loc.inbound_tags|length if loc.inbound_tags else 0 }} مورد</strong></div>
+    </div>
+
     <div class="card-actions">
-      <a class="button small" href="{{ url_for('location_edit', location_id=loc.id) }}">ویرایش</a>
-      <form method="post" action="{{ url_for('location_test', location_id=loc.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small" type="submit">تست IP خروجی</button></form>
-      <form method="post" action="{{ url_for('location_delete', location_id=loc.id) }}" onsubmit="return confirm('این لوکیشن و Inbound/Outbound مدیریت‌شده آن حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small danger" type="submit">حذف</button></form>
+      <a class="button small" href="{{ url_for('location_edit', location_id=loc.id) }}">{{ icon('edit') }} ویرایش</a>
+      <form method="post" action="{{ url_for('location_test', location_id=loc.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small" type="submit">{{ icon('pulse') }} تست خروجی</button></form>
+      <form method="post" action="{{ url_for('location_delete', location_id=loc.id) }}" onsubmit="return confirm('لوکیشن {{ loc.name }} و Inbound/Outbound مدیریت‌شده آن حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small danger" type="submit">{{ icon('trash') }} حذف</button></form>
     </div>
   </article>
-  {% else %}<div class="empty"><h2>هنوز لوکیشنی ساخته نشده است</h2><p>یک کشور بسازید؛ پروژه Inbound و Outbound اختصاصی آن را در 3x-ui به‌صورت خودکار ایجاد می‌کند.</p></div>{% endfor %}
+  {% endfor %}
 </div>
+<div class="empty-state hidden" data-filter-empty><div class="empty-illustration">{{ icon('search') }}</div><h2>نتیجه‌ای پیدا نشد</h2><p>عبارت جستجو یا فیلترها را تغییر دهید.</p></div>
+{% else %}
+<div class="empty-state"><div class="empty-illustration">{{ icon('globe') }}</div><h2>هنوز لوکیشنی ساخته نشده است</h2><p>کشور موردنظر را تعریف کنید؛ پروژه Inbound و Outbound اختصاصی را در 3x-ui می‌سازد و ترافیک را به Tor همان کشور Route می‌کند.</p><a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} ساخت اولین لوکیشن</a></div>
+{% endif %}
 {% endblock %}

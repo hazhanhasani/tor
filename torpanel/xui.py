@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -9,10 +11,12 @@ from urllib.parse import urljoin, urlparse
 import requests
 import urllib3
 
-from .db import get_setting
+from .db import get_setting, set_location_xui_inbound_port
 from .security import decrypt_secret
 
 MANAGED_PREFIX = "torloc-"
+MANAGED_INBOUND_PREFIX = "torloc-in-"
+MANAGED_INBOUND_METHOD = "2022-blake3-aes-256-gcm"
 
 
 class XUIError(RuntimeError):
@@ -57,7 +61,7 @@ class XUIClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Authorization": f"Bearer {self.settings.api_token}",
-            "User-Agent": "TorLocationManager/1.1",
+            "User-Agent": "TorLocationManager/1.2",
         })
 
     def _url(self, path: str) -> str:
@@ -155,6 +159,23 @@ class XUIClient:
             })
         return result
 
+    def get_inbound(self, inbound_id: int) -> dict[str, Any]:
+        obj = self._unwrap(self._request("GET", f"/panel/api/inbounds/get/{int(inbound_id)}"))
+        if not isinstance(obj, dict):
+            raise XUIError("جزئیات Inbound از 3x-ui قابل خواندن نیست.")
+        return obj
+
+    def add_inbound(self, payload: dict[str, Any]) -> dict[str, Any]:
+        obj = self._unwrap(self._request("POST", "/panel/api/inbounds/add", json=payload))
+        return obj if isinstance(obj, dict) else {}
+
+    def update_inbound(self, inbound_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        obj = self._unwrap(self._request("POST", f"/panel/api/inbounds/update/{int(inbound_id)}", json=payload))
+        return obj if isinstance(obj, dict) else {}
+
+    def delete_inbound(self, inbound_id: int) -> None:
+        self._request("POST", f"/panel/api/inbounds/del/{int(inbound_id)}")
+
     def get_xray_config(self) -> dict[str, Any]:
         payload = self._request("POST", "/panel/api/xray/")
         obj = self._unwrap(payload)
@@ -192,6 +213,164 @@ class XUIClient:
         return {"inbound_count": len(inbounds), "inbounds": inbounds}
 
 
+def managed_inbound_tag(location: dict[str, Any]) -> str:
+    return MANAGED_INBOUND_PREFIX + str(location["slug"])
+
+
+def managed_outbound_tag(location: dict[str, Any]) -> str:
+    return MANAGED_PREFIX + str(location["slug"])
+
+
+def derive_managed_inbound_password(location: dict[str, Any], decrypt_password) -> str:
+    gateway_secret = decrypt_password(location["ss_password"]).encode("utf-8")
+    material = b"tor-location-manager:3x-ui-inbound:v1\x00" + str(location["slug"]).encode("utf-8") + b"\x00" + gateway_secret
+    return base64.b64encode(hashlib.sha256(material).digest()).decode("ascii")
+
+
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
+def managed_inbound_payload(location: dict[str, Any], decrypt_password) -> dict[str, Any]:
+    port = int(location.get("xui_inbound_port") or 0)
+    if not port:
+        raise XUIError("پورت Inbound مدیریت‌شده هنوز تعیین نشده است.")
+    return {
+        "remark": f"Tor {str(location['country_code']).upper()} · {location['name']}",
+        "enable": True,
+        "expiryTime": 0,
+        "total": 0,
+        "trafficReset": "never",
+        "listen": "",
+        "port": port,
+        "protocol": "shadowsocks",
+        "settings": {
+            "method": MANAGED_INBOUND_METHOD,
+            "password": derive_managed_inbound_password(location, decrypt_password),
+            "network": "tcp",
+            "clients": [],
+            "ivCheck": False,
+        },
+        "streamSettings": {"network": "tcp", "security": "none"},
+        "tag": managed_inbound_tag(location),
+        "sniffing": {
+            "enabled": False,
+            "destOverride": ["http", "tls", "quic", "fakedns"],
+            "metadataOnly": False,
+            "routeOnly": False,
+        },
+    }
+
+
+def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
+    if int(current.get("port") or 0) != int(expected["port"]):
+        return False
+    for key in ("tag", "remark", "protocol"):
+        if str(current.get(key) or "") != str(expected.get(key) or ""):
+            return False
+    if bool(current.get("enable")) is not True:
+        return False
+    current_settings = _json_obj(current.get("settings"))
+    expected_settings = expected["settings"]
+    for key in ("method", "password", "network"):
+        if current_settings.get(key) != expected_settings.get(key):
+            return False
+    return True
+
+
+def _choose_inbound_port(location: dict[str, Any], options: list[dict[str, Any]], locations: list[dict[str, Any]]) -> int:
+    desired_tag = managed_inbound_tag(location)
+    existing = next((row for row in options if row.get("tag") == desired_tag), None)
+    configured = int(location.get("xui_inbound_port") or 0)
+    used_by_other = {
+        int(row.get("port") or 0)
+        for row in options
+        if row.get("tag") != desired_tag and int(row.get("port") or 0) > 0
+    }
+    reserved_local = {
+        int(loc.get("gateway_port") or 0) for loc in locations
+    } | {
+        int(loc.get("socks_port") or 0) for loc in locations
+    } | {8787}
+
+    if configured:
+        if configured in used_by_other:
+            raise XUIError(f"پورت {configured} در 3x-ui توسط Inbound دیگری استفاده می‌شود.")
+        if configured in reserved_local:
+            raise XUIError(
+                f"پورت {configured} با یکی از پورت‌های داخلی Tor/Gateway تداخل دارد. "
+                "برای Inbound 3x-ui یک پورت جدا انتخاب کنید."
+            )
+        return configured
+
+    if existing and int(existing.get("port") or 0) > 0:
+        port = int(existing["port"])
+        set_location_xui_inbound_port(int(location["id"]), port)
+        location["xui_inbound_port"] = port
+        return port
+
+    unavailable = used_by_other | reserved_local | {
+        int(loc.get("xui_inbound_port") or 0) for loc in locations if int(loc.get("xui_inbound_port") or 0) > 0
+    }
+    for port in range(21000, 60000):
+        if port not in unavailable:
+            set_location_xui_inbound_port(int(location["id"]), port)
+            location["xui_inbound_port"] = port
+            return port
+    raise XUIError("هیچ پورت آزاد مناسبی برای Inbound مدیریت‌شده پیدا نشد.")
+
+
+def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
+    options = client.list_inbounds()
+    desired_tags = {managed_inbound_tag(loc) for loc in locations if loc.get("enabled")}
+
+    removed = 0
+    for row in list(options):
+        tag = str(row.get("tag") or "")
+        if tag.startswith(MANAGED_INBOUND_PREFIX) and tag not in desired_tags:
+            if row.get("id") is not None:
+                client.delete_inbound(int(row["id"]))
+                removed += 1
+
+    if removed:
+        options = client.list_inbounds()
+
+    created = updated = 0
+    for location in locations:
+        if not location.get("enabled"):
+            continue
+        _choose_inbound_port(location, options, locations)
+        tag = managed_inbound_tag(location)
+        expected = managed_inbound_payload(location, decrypt_password)
+        existing = next((row for row in options if row.get("tag") == tag), None)
+        if existing is None:
+            client.add_inbound(expected)
+            created += 1
+            options.append({
+                "id": None,
+                "tag": tag,
+                "remark": expected["remark"],
+                "protocol": expected["protocol"],
+                "port": expected["port"],
+            })
+            continue
+        if existing.get("id") is None:
+            continue
+        current = client.get_inbound(int(existing["id"]))
+        if not _inbound_matches(current, expected):
+            client.update_inbound(int(existing["id"]), expected)
+            updated += 1
+    return {"created": created, "updated": updated, "removed": removed}
+
+
 def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]],
                         gateway_host: str, decrypt_password) -> dict[str, Any]:
     if not gateway_host:
@@ -207,18 +386,27 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
 
     managed_rules: list[dict[str, Any]] = []
     for loc in locations:
-        if not loc.get("enabled") or not loc.get("inbound_tags"):
+        if not loc.get("enabled"):
             continue
-        tag = MANAGED_PREFIX + loc["slug"]
+        tag = managed_outbound_tag(loc)
         outbounds.append({
-            "tag": tag, "protocol": "shadowsocks",
+            "tag": tag,
+            "protocol": "shadowsocks",
             "settings": {
-                "address": gateway_host, "port": int(loc["gateway_port"]),
-                "method": loc["ss_method"], "password": decrypt_password(loc["ss_password"]),
+                "address": gateway_host,
+                "port": int(loc["gateway_port"]),
+                "method": loc["ss_method"],
+                "password": decrypt_password(loc["ss_password"]),
             },
         })
-        managed_rules.append({"type": "field", "inboundTag": list(loc["inbound_tags"]),
-                              "outboundTag": tag})
+        route_tags = [managed_inbound_tag(loc), *list(loc.get("inbound_tags") or [])]
+        route_tags = list(dict.fromkeys(str(x) for x in route_tags if x))
+        if route_tags:
+            managed_rules.append({
+                "type": "field",
+                "inboundTag": route_tags,
+                "outboundTag": tag,
+            })
 
     api_rules, rest = [], []
     for rule in rules:
@@ -231,11 +419,13 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     return config
 
 
-def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> None:
+def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
     settings = current_settings()
     if not settings.base_url.strip("/") or not settings.api_token:
         raise XUIError("3x-ui URL/API token is not configured")
     client = XUIClient(settings)
+    inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
     updated = build_synced_config(client.get_xray_config(), locations,
                                   settings.gateway_host, decrypt_password)
     client.update_xray_config(updated)
+    return inbound_stats

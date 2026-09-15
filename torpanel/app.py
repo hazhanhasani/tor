@@ -14,7 +14,7 @@ from .db import create_location, delete_location, get_location, get_setting, ini
 from .runtime import apply_runtime, service_active, test_exit
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
-from .xui import XUIClient, XUIError, current_settings, sync_locations
+from .xui import XUIClient, XUIError, current_settings, normalize_api_token, sync_locations
 
 
 def make_app() -> Flask:
@@ -80,7 +80,7 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             base_url = request.form.get("xui_base_url", "").strip()
-            token = request.form.get("xui_api_token", "").strip()
+            token = normalize_api_token(request.form.get("xui_api_token", ""))
             gateway_host = request.form.get("gateway_host", "").strip()
             verify_tls = "1" if request.form.get("xui_verify_tls") == "on" else "0"
             test_url = request.form.get("xui_outbound_test_url", "https://www.google.com/generate_204").strip()

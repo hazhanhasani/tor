@@ -22,6 +22,10 @@ case "$ARCH" in
   *) echo "Unsupported Xray architecture: $ARCH" >&2; exit 1 ;;
 esac
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUNDLED_ZIP="$ROOT_DIR/vendor/xray/$ASSET"
+BUNDLED_SUM="$ROOT_DIR/vendor/xray/$ASSET.sha256"
 API_BASE="${TORPANEL_GITHUB_API_BASE:-https://api.github.com}"
 PROXY_URL="${TORPANEL_DOWNLOAD_PROXY:-}"
 CUSTOM_URL="${TORPANEL_XRAY_URL:-}"
@@ -50,7 +54,11 @@ download_api_asset() {
 ZIP="$TMP/$ASSET"
 EXPECTED_SHA=""
 
-if [[ -n "$CUSTOM_URL" ]]; then
+if [[ -f "$BUNDLED_ZIP" && -f "$BUNDLED_SUM" ]]; then
+  echo "Installing Xray from bundled offline asset..."
+  cp "$BUNDLED_ZIP" "$ZIP"
+  EXPECTED_SHA="$(awk '{print $1}' "$BUNDLED_SUM" | head -n1)"
+elif [[ -n "$CUSTOM_URL" ]]; then
   echo "Installing Xray from custom URL..."
   download_url "$CUSTOM_URL" "$ZIP"
   EXPECTED_SHA="$CUSTOM_SHA"
@@ -60,7 +68,7 @@ else
   echo "Resolving latest Xray release via GitHub API..."
   download_url "$RELEASE_API" "$JSON" || {
     echo "Could not reach the Xray GitHub API." >&2
-    echo "Either preinstall xray, configure TORPANEL_DOWNLOAD_PROXY, or set TORPANEL_XRAY_URL and TORPANEL_XRAY_SHA256." >&2
+    echo "Use the offline bundle, preinstall xray, configure TORPANEL_DOWNLOAD_PROXY, or set TORPANEL_XRAY_URL and TORPANEL_XRAY_SHA256." >&2
     exit 1
   }
 
@@ -90,7 +98,7 @@ PY
     echo "Direct GitHub asset URL was unavailable; downloaded through the GitHub API asset endpoint."
   else
     echo "Xray download failed through both official GitHub paths." >&2
-    echo "Configure TORPANEL_DOWNLOAD_PROXY or TORPANEL_XRAY_URL for restricted networks." >&2
+    echo "Use the offline bundle or configure TORPANEL_DOWNLOAD_PROXY / TORPANEL_XRAY_URL." >&2
     exit 1
   fi
 fi
@@ -102,7 +110,7 @@ if [[ -n "$EXPECTED_SHA" ]]; then
     exit 1
   }
 else
-  echo "Refusing an unverified custom Xray package; TORPANEL_XRAY_SHA256 is required." >&2
+  echo "Refusing an unverified Xray package; a trusted SHA-256 is required." >&2
   exit 1
 fi
 

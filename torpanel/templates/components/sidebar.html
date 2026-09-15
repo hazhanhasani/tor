@@ -17,6 +17,7 @@
     <div class="nav-section-label">مدیریت</div>
     <a class="nav-item {{ 'active' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">{{ icon('dashboard') }}<span>داشبورد</span></a>
     <a class="nav-item {{ 'active' if request.endpoint in ['index','location_new','location_edit'] else '' }}" href="{{ url_for('index') }}">{{ icon('globe') }}<span>لوکیشن‌ها</span></a>
+    <a class="nav-item {{ 'active' if request.blueprint == 'tunnels' else '' }}" href="{{ url_for('tunnels.tunnel_index') }}">{{ icon('route') }}<span>تانل ترکیبی</span></a>
     <a class="nav-item {{ 'active' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">{{ icon('link') }}<span>اتصال و شبکه</span></a>
 
     <div class="nav-section-label">سیستم</div>

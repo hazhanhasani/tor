@@ -13,6 +13,7 @@
     <nav>
       <a href="{{ url_for('index') }}">لوکیشن‌ها</a>
       <a href="{{ url_for('settings') }}">اتصال 3x-ui</a>
+      <a href="{{ url_for('updates') }}">بروزرسانی{% if update_badge %}<span class="nav-badge">جدید</span>{% endif %}</a>
       <form method="post" action="{{ url_for('logout') }}" class="inline">
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <button class="link-button" type="submit">خروج</button>

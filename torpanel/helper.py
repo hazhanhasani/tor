@@ -86,6 +86,11 @@ def ensure_group(path: Path, group_name: str) -> None:
     os.chown(path, 0, g.gr_gid)
 
 
+def validation_temp_path(path: Path) -> Path:
+    """Keep a .json suffix so Xray can auto-detect the config format."""
+    return path.with_name(f"{path.stem}.new{path.suffix}")
+
+
 def apply() -> None:
     if os.geteuid() != 0:
         raise SystemExit("helper must run as root")
@@ -115,7 +120,7 @@ def apply() -> None:
 
     config = gateway_config(locations)
     encoded = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
-    temp = GATEWAY_CONFIG.with_suffix(".json.new")
+    temp = validation_temp_path(GATEWAY_CONFIG)
     atomic_write(temp, encoded, 0o640)
     if locations:
         checked = run(XRAY_BIN, "run", "-test", "-config", str(temp), check=False)

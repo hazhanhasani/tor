@@ -133,9 +133,15 @@
         const el = wizard.querySelector(selector);
         if (el) el.textContent = value;
       });
-      const selected = wizard.querySelectorAll('input[name="inbound_tags"]:checked').length;
+      const xuiCount = wizard.querySelectorAll('input[name="inbound_tags"]:checked').length;
+      const pgCount = wizard.querySelectorAll('input[name="pasarguard_inbound_tags"]:checked').length;
       const extra = wizard.querySelector('[data-review-extra]');
-      if (extra) extra.textContent = selected ? `${selected} ورودی اضافی` : 'بدون ورودی اضافی';
+      if (extra) {
+        const values = [];
+        if (xuiCount) values.push(`3x-ui: ${xuiCount}`);
+        if (pgCount) values.push(`PasarGuard: ${pgCount}`);
+        extra.textContent = values.length ? values.join(' · ') : 'بدون Route اضافی';
+      }
     };
 
     wizard.querySelectorAll('[data-wizard-next]').forEach((btn) => btn.addEventListener('click', () => { if (validateCurrent()) showStep(current + 1); }));

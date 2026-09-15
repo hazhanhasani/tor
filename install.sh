@@ -56,14 +56,8 @@ apt_args=(-o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::
 if [[ -n "$APT_PROXY" ]]; then
   apt_args+=( -o "Acquire::http::Proxy=$APT_PROXY" -o "Acquire::https::Proxy=$APT_PROXY" )
 fi
-
-apt_update() {
-  apt-get "${apt_args[@]}" update
-}
-
-apt_install() {
-  DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" install -y "$@"
-}
+apt_update() { apt-get "${apt_args[@]}" update; }
+apt_install() { DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" install -y "$@"; }
 
 pip_args=(--disable-pip-version-check --retries 5 --timeout 30)
 if [[ -n "$PIP_INDEX_URL_CUSTOM" ]]; then
@@ -79,14 +73,27 @@ if [[ $EXISTING -eq 1 ]]; then
   echo "Existing installation detected; persistent configuration will be preserved."
 fi
 
-echo "[1/8] Installing system dependencies with retry-safe APT settings..."
-apt_update
-apt_install tor python3 python3-venv python3-pip curl ca-certificates unzip openssl sudo rsync util-linux
-if apt-cache show obfs4proxy >/dev/null 2>&1; then
-  apt_install obfs4proxy
+echo "[1/8] Checking system dependencies..."
+NEED_APT=0
+for cmd in tor python3 curl unzip openssl sudo rsync flock; do
+  command -v "$cmd" >/dev/null 2>&1 || NEED_APT=1
+done
+if [[ "$MODE" == "upgrade" && $NEED_APT -eq 0 ]]; then
+  echo "Core system dependencies are already present; skipping APT network access during upgrade."
 else
-  echo "Warning: obfs4proxy is not available from the configured APT repositories."
-  echo "Direct Tor mode will work; bridge mode requires obfs4proxy to be installed later."
+  apt_update
+  apt_install tor python3 python3-venv python3-pip curl ca-certificates unzip openssl sudo rsync util-linux
+fi
+if ! command -v obfs4proxy >/dev/null 2>&1; then
+  if [[ "$MODE" == "upgrade" ]]; then
+    echo "Warning: obfs4proxy is not installed. Direct Tor mode remains available."
+    echo "Install obfs4proxy later if you enable bridge mode."
+  elif apt-cache show obfs4proxy >/dev/null 2>&1; then
+    apt_install obfs4proxy
+  else
+    echo "Warning: obfs4proxy is not available from the configured APT repositories."
+    echo "Direct Tor mode will work; bridge mode requires obfs4proxy to be installed later."
+  fi
 fi
 
 if ! id torpanel >/dev/null 2>&1; then
@@ -118,42 +125,56 @@ rsync -a --delete \
 
 VENV_DIR="$APP_DIR/venv"
 OLD_VENV="$APP_DIR/.venv-old"
-rm -rf "$OLD_VENV"
-if [[ -d "$VENV_DIR" ]]; then
-  mv "$VENV_DIR" "$OLD_VENV"
-fi
-restore_old_venv() {
-  rm -rf "$VENV_DIR"
-  if [[ -d "$OLD_VENV" ]]; then
-    mv "$OLD_VENV" "$VENV_DIR"
+VENV_READY=0
+
+if [[ "$MODE" == "upgrade" && -x "$VENV_DIR/bin/python" ]]; then
+  echo "Reusing the existing Python environment for a network-independent upgrade..."
+  if "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-deps --no-build-isolation "$APP_DIR" \
+      && "$VENV_DIR/bin/python" -m pip check; then
+    VENV_READY=1
+  else
+    echo "Existing Python environment needs dependency repair; trying the configured package source."
   fi
-}
-if ! python3 -m venv "$VENV_DIR"; then
-  restore_old_venv
-  echo "Failed to create Python virtual environment."
-  exit 1
 fi
-if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade pip wheel; then
-  restore_old_venv
-  echo "Failed to prepare Python virtual environment."
-  echo "On restricted networks set TORPANEL_DOWNLOAD_PROXY or TORPANEL_PIP_INDEX_URL and retry."
-  exit 1
-fi
-if [[ -d "$APP_DIR/vendor/wheels" ]] && find "$APP_DIR/vendor/wheels" -maxdepth 1 -type f -name '*.whl' | grep -q .; then
-  echo "Using bundled Python wheel cache."
-  if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-index --find-links "$APP_DIR/vendor/wheels" "$APP_DIR"; then
-    echo "Bundled wheel cache was not compatible with this host; falling back to configured package index."
-    "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR" || { restore_old_venv; exit 1; }
+
+if [[ $VENV_READY -eq 0 ]]; then
+  rm -rf "$OLD_VENV"
+  if [[ -d "$VENV_DIR" ]]; then
+    mv "$VENV_DIR" "$OLD_VENV"
   fi
-else
-  if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR"; then
+  restore_old_venv() {
+    rm -rf "$VENV_DIR"
+    if [[ -d "$OLD_VENV" ]]; then
+      mv "$OLD_VENV" "$VENV_DIR"
+    fi
+  }
+  if ! python3 -m venv "$VENV_DIR"; then
     restore_old_venv
-    echo "Failed to install application dependencies."
+    echo "Failed to create Python virtual environment."
+    exit 1
+  fi
+  if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade pip wheel; then
+    restore_old_venv
+    echo "Failed to prepare Python virtual environment."
     echo "On restricted networks set TORPANEL_DOWNLOAD_PROXY or TORPANEL_PIP_INDEX_URL and retry."
     exit 1
   fi
+  if [[ -d "$APP_DIR/vendor/wheels" ]] && find "$APP_DIR/vendor/wheels" -maxdepth 1 -type f -name '*.whl' | grep -q .; then
+    echo "Using bundled Python wheel cache."
+    if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-index --find-links "$APP_DIR/vendor/wheels" "$APP_DIR"; then
+      echo "Bundled wheel cache was not compatible with this host; falling back to configured package index."
+      "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR" || { restore_old_venv; exit 1; }
+    fi
+  else
+    if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR"; then
+      restore_old_venv
+      echo "Failed to install application dependencies."
+      echo "On restricted networks set TORPANEL_DOWNLOAD_PROXY or TORPANEL_PIP_INDEX_URL and retry."
+      exit 1
+    fi
+  fi
+  rm -rf "$OLD_VENV"
 fi
-rm -rf "$OLD_VENV"
 
 install -m 0755 "$APP_DIR/scripts/tor-location-manager-update" /usr/local/sbin/tor-location-manager-update
 install -m 0644 "$APP_DIR/systemd/tor-location@.service" /etc/systemd/system/tor-location@.service

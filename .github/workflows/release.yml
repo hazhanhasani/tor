@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate version
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          grep -q "version = \"${VERSION}\"" pyproject.toml
+      - name: Test
+        run: |
+          pip install -r requirements-dev.txt
+          pip install -e .
+          python -m compileall -q torpanel
+          pytest -q
+      - name: Build release package
+        run: |
+          set -euo pipefail
+          ROOT="tor-location-manager-${GITHUB_REF_NAME}"
+          ASSET="${ROOT}.tar.gz"
+          mkdir "$ROOT"
+          git archive HEAD | tar -x -C "$ROOT"
+          tar -czf "$ASSET" "$ROOT"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET="tor-location-manager-${GITHUB_REF_NAME}.tar.gz"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --generate-notes --title "Tor Location Manager ${GITHUB_REF_NAME}"
+          fi

@@ -1,0 +1,15 @@
+{% from 'components/icons.html' import icon %}
+<header class="workspace-topbar">
+  <div class="topbar-start">
+    <button class="icon-button mobile-menu" type="button" data-sidebar-open aria-label="باز کردن منو">{{ icon('menu') }}</button>
+    <div class="topbar-context">
+      <span class="topbar-kicker">Tor Location Manager</span>
+      <strong>{% block topbar_title %}مدیریت Multi-Exit{% endblock %}</strong>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span class="topbar-health {{ 'ok' if ui_configured else 'warn' }}"><span></span>{{ '3x-ui آماده' if ui_configured else '3x-ui تنظیم نشده' }}</span>
+    <button class="icon-button" type="button" data-theme-toggle aria-label="تغییر پوسته" title="تغییر پوسته">{{ icon('sun') }}</button>
+    <a class="button primary compact-button" href="{{ url_for('location_new') }}">{{ icon('plus') }}<span>لوکیشن جدید</span></a>
+  </div>
+</header>

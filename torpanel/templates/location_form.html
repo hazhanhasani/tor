@@ -3,7 +3,7 @@
 {% block title %}{{ 'ویرایش' if location else 'افزودن' }} لوکیشن | Tor Location Manager{% endblock %}
 {% block content %}
 <section class="page-head">
-  <div><div class="eyebrow">LOCATION WIZARD</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p>کشور، پورت‌ها و Routeهای 3x-ui را مرحله‌به‌مرحله تنظیم کنید.</p></div>
+  <div><div class="eyebrow">LOCATION WIZARD</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p>کشور، پورت‌ها و Routeهای 3x-ui و PasarGuard را مرحله‌به‌مرحله تنظیم کنید.</p></div>
   <a class="button" href="{{ url_for('index') }}">بازگشت به لوکیشن‌ها</a>
 </section>
 
@@ -13,7 +13,7 @@
     <aside class="wizard-rail" aria-label="مراحل ساخت لوکیشن">
       <button type="button" class="wizard-step active" data-wizard-step><span class="step-dot">1</span><span>اطلاعات پایه</span></button>
       <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">2</span><span>پورت و مسیر</span></button>
-      <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">3</span><span>Inboundهای اضافی</span></button>
+      <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">3</span><span>Routing پنل‌ها</span></button>
       <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">4</span><span>مرور و ذخیره</span></button>
     </aside>
 
@@ -34,11 +34,11 @@
         <div class="form-section">
           <div class="form-section-title"><span class="form-section-number">02</span><div><h3>پورت‌ها و مسیر اختصاصی</h3><p>Inbound سمت 3x-ui و Gateway سمت Tor باید پورت متفاوت داشته باشند.</p></div></div>
           <div class="two">
-            <label class="field"><span>پورت Inbound در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>اگر خالی باشد پروژه از محدوده آزاد یک پورت مناسب انتخاب می‌کند.</small></label>
-            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت SS2022 بین 3x-ui و Gateway. از بیرون فقط IP سرور 3x-ui باید به آن دسترسی داشته باشد.</small></label>
+            <label class="field"><span>پورت Inbound مدیریت‌شده در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>برای 3x-ui یک Inbound اختصاصی خودکار می‌سازد. PasarGuard از Inboundهای موجود Core استفاده می‌کند.</small></label>
+            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت SS2022 بین پنل و Gateway. دسترسی شبکه به این پورت را محدود نگه دارید.</small></label>
           </div>
           <div class="location-route" style="margin-bottom:0">
-            <div class="route-node"><b>3x-ui</b><span>Inbound اختصاصی</span></div><span class="route-arrow">→</span>
+            <div class="route-node"><b>3x-ui / PasarGuard</b><span>Inbound انتخابی</span></div><span class="route-arrow">→</span>
             <div class="route-node"><b>SS2022</b><span>Gateway رمزنگاری‌شده</span></div><span class="route-arrow">→</span>
             <div class="route-node"><b>Tor Exit</b><span>کشور انتخابی</span></div>
           </div>
@@ -48,17 +48,35 @@
 
       <section class="wizard-panel" data-wizard-panel>
         <div class="form-section">
-          <div class="form-section-title"><span class="form-section-number">03</span><div><h3>Inboundهای دستی اضافی</h3><p>اختیاری؛ علاوه بر Inbound اختصاصی، ورودی‌های فعلی را هم می‌توانید از همین کشور خارج کنید.</p></div></div>
-          {% if inbounds %}
-          <div class="checks">
-            {% for item in inbounds %}
-            <label class="check row"><input type="checkbox" name="inbound_tags" value="{{ item.tag }}" {% if location and item.tag in location.inbound_tags %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }} · port {{ item.port }} · {{ item.tag }}</small></span></label>
-            {% endfor %}
+          <div class="form-section-title"><span class="form-section-number">03</span><div><h3>Routing پنل‌ها</h3><p>Inboundهای هر پنل را انتخاب کنید تا فقط همان ورودی‌ها از این Tor Exit خارج شوند.</p></div></div>
+
+          <div class="panel" style="box-shadow:none;margin-bottom:14px">
+            <div class="section-title"><div><h2>3x-ui</h2><p>علاوه بر Inbound اختصاصی این لوکیشن، ورودی‌های دستی دلخواه</p></div><span class="status {{ 'ok' if inbounds else 'off' }}">{{ inbounds|length }} Inbound</span></div>
+            {% if inbounds %}
+            <div class="checks">
+              {% for item in inbounds %}
+              <label class="check row"><input type="checkbox" name="inbound_tags" value="{{ item.tag }}" {% if location and item.tag in location.inbound_tags %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }} · port {{ item.port }} · {{ item.tag }}</small></span></label>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. Inbound اختصاصی Tor همچنان هنگام Sync خودکار ساخته می‌شود.</div>
+            {% endif %}
           </div>
-          {% else %}
-          <div class="empty-state" style="padding:28px 18px;box-shadow:none"><div class="empty-illustration" style="width:54px;height:54px">{{ icon('route') }}</div><h2>Inbound دستی دیگری نیست</h2><p>اشکالی ندارد؛ Inbound اختصاصی این لوکیشن همیشه خودکار ساخته می‌شود.</p></div>
-          {% endif %}
-          <label class="check check-card" style="margin-top:14px"><input type="checkbox" name="enabled" {% if not location or location.enabled %}checked{% endif %}><span><b>لوکیشن فعال باشد</b><small>در حالت غیرفعال، Tor و Route مدیریت‌شده برای این لوکیشن اجرا نمی‌شوند.</small></span></label>
+
+          <div class="panel" style="box-shadow:none;margin-bottom:14px">
+            <div class="section-title"><div><h2>PasarGuard</h2><p>Inboundهای Core انتخاب‌شده در تنظیمات PasarGuard</p></div><span class="status {{ 'ok' if pasarguard_inbounds else 'off' }}">{{ pasarguard_inbounds|length }} Inbound</span></div>
+            {% if pasarguard_inbounds %}
+            <div class="checks">
+              {% for item in pasarguard_inbounds %}
+              <label class="check row"><input type="checkbox" name="pasarguard_inbound_tags" value="{{ item.tag }}" {% if item.tag in pasarguard_tags %}checked{% endif %}><span><b>{{ item.tag }}</b><small>{{ item.protocol }}{% if item.port %} · port {{ item.port }}{% endif %}{% if item.listen %} · {{ item.listen }}{% endif %}</small></span></label>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="callout">PasarGuard تنظیم نشده یا Inbound قابل خواندن نیست. از «اتصال و شبکه» URL، API Key و Core ID را ثبت کنید.</div>
+            {% endif %}
+          </div>
+
+          <label class="check check-card"><input type="checkbox" name="enabled" {% if not location or location.enabled %}checked{% endif %}><span><b>لوکیشن فعال باشد</b><small>در حالت غیرفعال، Tor و Routeهای مدیریت‌شده برای این لوکیشن اجرا نمی‌شوند.</small></span></label>
         </div>
         <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="button" data-wizard-next>مرور نهایی {{ icon('chevron') }}</button></div>
       </section>
@@ -71,10 +89,10 @@
             <div class="review-row"><span>کشور خروجی</span><strong data-review-country>—</strong></div>
             <div class="review-row"><span>پورت Inbound 3x-ui</span><strong data-review-inbound>خودکار</strong></div>
             <div class="review-row"><span>پورت Gateway</span><strong data-review-gateway>—</strong></div>
-            <div class="review-row"><span>Inboundهای اضافی</span><strong data-review-extra>بدون ورودی اضافی</strong></div>
+            <div class="review-row"><span>Routing پنل‌ها</span><strong data-review-extra>بدون Route اضافی</strong></div>
             <div class="review-row"><span>وضعیت</span><strong data-review-state>فعال</strong></div>
           </div>
-          <div class="callout" style="margin-top:14px"><strong>پس از ذخیره:</strong> Tor instance، Inbound اختصاصی Shadowsocks 2022، Outbound و Routing Rule مدیریت‌شده ساخته یا Reconcile می‌شوند. تنظیمات دستی غیرمرتبط 3x-ui دست‌نخورده می‌مانند.</div>
+          <div class="callout" style="margin-top:14px"><strong>پس از ذخیره:</strong> Tor instance و Gateway ساخته می‌شوند؛ 3x-ui و PasarGuard فقط Tagهای مدیریت‌شده خود پروژه را Reconcile می‌کنند و Routeهای دستی غیرمرتبط دست‌نخورده می‌مانند.</div>
         </div>
         <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="submit">{{ icon('check') }} {{ 'ذخیره تغییرات' if location else 'ساخت و اعمال لوکیشن' }}</button></div>
       </section>

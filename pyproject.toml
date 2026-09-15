@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tor-location-manager"
-version = "1.5.0"
-description = "Multi-country Tor egress manager with automatic 3x-ui/Xray synchronization"
+version = "1.6.0"
+description = "Multi-panel Tor egress and hybrid Iran/foreign tunnel manager with 3x-ui and PasarGuard routing"
 requires-python = ">=3.10"
 dependencies = [
   "Flask>=3.0,<4",

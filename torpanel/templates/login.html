@@ -1,14 +1,34 @@
 {% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
 {% block title %}ورود | Tor Location Manager{% endblock %}
 {% block content %}
-<section class="auth-card">
-  <div class="eyebrow">TOR + 3X-UI</div><h1>ورود به مدیریت لوکیشن‌ها</h1>
-  <p class="muted">مدیریت خروجی‌های مستقل Tor و همگام‌سازی خودکار با Xray.</p>
-  <form method="post" action="{{ url_for('login_post') }}" class="stack">
-    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <label>نام کاربری<input name="username" autocomplete="username" required></label>
-    <label>رمز عبور<input name="password" type="password" autocomplete="current-password" required></label>
-    <button class="primary" type="submit">ورود</button>
-  </form>
-</section>
+<div class="auth-layout">
+  <section class="auth-visual">
+    <div>
+      <span class="brand-mark">T</span>
+      <div class="eyebrow" style="color:#9ab0ff">TOR + 3X-UI</div>
+      <h1>چند کشور، یک سرور، مدیریت یکپارچه</h1>
+      <p>Tor Location Manager خروجی‌های مستقل Tor را به Inbound و Outboundهای 3x-ui وصل می‌کند و همه مسیرها را از یک پنل مدیریت می‌کند.</p>
+      <div class="auth-features">
+        <div class="auth-feature"><span>{{ icon('globe') }}</span> Multi-Country Tor Exit</div>
+        <div class="auth-feature"><span>{{ icon('route') }}</span> Inbound / Outbound Sync خودکار</div>
+        <div class="auth-feature"><span>{{ icon('shield') }}</span> SS2022 Gateway + Bridge برای شبکه محدود</div>
+        <div class="auth-feature"><span>{{ icon('update') }}</span> Update امن با Backup و Rollback</div>
+      </div>
+    </div>
+    <small style="color:#8595b4">Tor Location Manager · v{{ ui_current_version }}</small>
+  </section>
+  <section class="auth-form">
+    <div class="eyebrow">WELCOME BACK</div>
+    <h2>ورود به پنل مدیریت</h2>
+    <p>برای مدیریت لوکیشن‌ها و اتصال 3x-ui وارد شوید.</p>
+    <form method="post" action="{{ url_for('login_post') }}" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label class="field"><span>نام کاربری</span><input name="username" autocomplete="username" autofocus required placeholder="admin"></label>
+      <label class="field"><span>رمز عبور</span><input name="password" type="password" autocomplete="current-password" required placeholder="••••••••••••"></label>
+      <button class="button primary wide" type="submit">{{ icon('lock') }} ورود امن</button>
+    </form>
+    <div class="auth-meta">Credential اولیه فقط هنگام نصب ساخته می‌شود و در فایل root-only سرور نیز نگهداری می‌شود.</div>
+  </section>
+</div>
 {% endblock %}

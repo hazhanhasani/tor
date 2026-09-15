@@ -1,4 +1,4 @@
-from torpanel.xui import build_synced_config
+from torpanel.xui import build_synced_config, normalize_api_token
 
 
 def fake_decrypt(value):
@@ -32,3 +32,9 @@ def test_disabled_location_is_not_added():
     result = build_synced_config(original, locations, "host", fake_decrypt)
     assert result["outbounds"] == []
     assert result["routing"]["rules"] == []
+
+
+def test_normalize_api_token_accepts_raw_and_bearer():
+    assert normalize_api_token(" abc123 ") == "abc123"
+    assert normalize_api_token("Bearer abc123") == "abc123"
+    assert normalize_api_token("bearer   abc123 ") == "abc123"

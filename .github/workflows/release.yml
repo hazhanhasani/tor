@@ -2,11 +2,16 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: tor-location-manager-release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -18,35 +23,82 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate version
+
+      - name: Resolve version
+        id: version
+        shell: bash
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < VERSION)"
-          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           grep -q "version = \"${VERSION}\"" pyproject.toml
-      - name: Test
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists; nothing to publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG does not exist; validating and publishing it."
+          fi
+
+      - name: Install test dependencies
+        if: steps.existing.outputs.exists != 'true'
         run: |
           pip install -r requirements-dev.txt
           pip install -e .
-          python -m compileall -q torpanel
-          pytest -q
-      - name: Build release package
+
+      - name: Validate source
+        if: steps.existing.outputs.exists != 'true'
         run: |
           set -euo pipefail
-          ROOT="tor-location-manager-${GITHUB_REF_NAME}"
+          python -m compileall -q torpanel
+          bash -n install.sh bootstrap.sh scripts/tor-location-manager-update
+          pytest -q
+
+      - name: Build release package
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ROOT="tor-location-manager-${TAG}"
           ASSET="${ROOT}.tar.gz"
           mkdir "$ROOT"
           git archive HEAD | tar -x -C "$ROOT"
           tar -czf "$ASSET" "$ROOT"
           sha256sum "$ASSET" > "$ASSET.sha256"
-      - name: Publish GitHub Release
+
+      - name: Publish GitHub Release and tag
+        if: steps.existing.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          ASSET="tor-location-manager-${GITHUB_REF_NAME}.tar.gz"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --generate-notes --title "Tor Location Manager ${GITHUB_REF_NAME}"
-          fi
+          ASSET="tor-location-manager-${TAG}.tar.gz"
+          gh release create "$TAG" \
+            "$ASSET" "$ASSET.sha256" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            --title "Tor Location Manager ${TAG}"
+
+      - name: Verify published assets
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ASSET="tor-location-manager-${TAG}.tar.gz"
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fx "$ASSET"
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fx "$ASSET.sha256"

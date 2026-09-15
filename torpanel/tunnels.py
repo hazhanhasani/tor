@@ -29,7 +29,7 @@ from .db import (
 )
 from .security import decrypt_secret, encrypt_secret
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.2.0"
 WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$")
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)$")
 
@@ -92,7 +92,6 @@ def _allocate_resources() -> dict[str, Any]:
     if network.version != 4 or network.prefixlen > 28:
         raise TunnelError("Overlay CIDR باید IPv4 و حداقل دارای فضای /28 باشد.")
 
-    # Up to 8000 simultaneously configured links with the default port plan.
     for slot, subnet in enumerate(network.subnets(new_prefix=30), start=0):
         if slot >= 8000:
             break
@@ -180,7 +179,6 @@ def enroll_node(payload: dict[str, Any], observed_ip: str) -> tuple[dict[str, An
     role = str(enrollment["role"])
     current_uuid = link.get(f"{role}_node_uuid")
     if current_uuid:
-        # Explicitly rotating an enrollment token is allowed to replace a node on the link.
         existing = get_tunnel_node(str(current_uuid))
         if existing and existing.get("enabled"):
             raise TunnelError("این سمت Tunnel قبلاً Node فعال دارد؛ ابتدا Node قبلی را غیرفعال یا Link را دوباره بسازید.")
@@ -225,9 +223,12 @@ def _link_payload(link: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
     peer = get_tunnel_node(str(peer_uuid)) if peer_uuid else None
     ready = bool(peer and peer.get("enabled"))
     short = link["uuid"].replace("-", "")[:8]
-    iface = f"tlm{short[:7]}"  # <= 10 chars; Linux IFNAMSIZ-safe.
+    iface = f"tlm{short[:7]}"
     self_ip = link["iran_overlay_ip"] if role == "iran" else link["foreign_overlay_ip"]
     peer_ip = link["foreign_overlay_ip"] if role == "iran" else link["iran_overlay_ip"]
+    slot = max(0, int(link["foreign_wg_port"]) - 52000)
+    route_table = 12000 + slot
+    rule_priority = 12000 + slot
 
     result: dict[str, Any] = {
         "uuid": link["uuid"],
@@ -241,9 +242,15 @@ def _link_payload(link: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
         "address": f"{self_ip}/30",
         "self_ip": self_ip,
         "peer_ip": peer_ip,
-        "peer_allowed_ips": [f"{peer_ip}/32"],
+        "peer_allowed_ips": ["0.0.0.0/0"] if role == "iran" else [f"{link['iran_overlay_ip']}/32"],
         "preshared_key": decrypt_secret(link["wg_psk"]),
         "listen_port": int(link["foreign_wg_port"]) if role == "foreign" else 0,
+        "egress": {
+            "source_ip": str(link["iran_overlay_ip"]),
+            "subnet_cidr": str(link["subnet_cidr"]),
+            "route_table": route_table,
+            "rule_priority": rule_priority,
+        },
         "frp": {
             "control_port": int(link["iran_frp_control_port"]),
             "proxy_port": int(link["iran_frp_proxy_port"]),
@@ -263,10 +270,7 @@ def _link_payload(link: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
         "endpoint_host": peer_endpoint,
     }
     if role == "iran":
-        result["direct_endpoint"] = {
-            "host": peer_endpoint,
-            "port": int(link["foreign_wg_port"]),
-        }
+        result["direct_endpoint"] = {"host": peer_endpoint, "port": int(link["foreign_wg_port"])}
         result["reverse_endpoint"] = {"host": "127.0.0.1", "port": int(link["iran_frp_proxy_port"])}
         result["frp"].update({
             "side": "server",
@@ -296,7 +300,7 @@ def _link_payload(link: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
 def desired_config(node: dict[str, Any]) -> dict[str, Any]:
     links = links_for_tunnel_node(node["uuid"])
     return {
-        "schema": 1,
+        "schema": 2,
         "agent_min_version": AGENT_VERSION,
         "poll_interval": 15,
         "node": {"uuid": node["uuid"], "name": node["name"], "role": node["role"]},
@@ -361,5 +365,9 @@ def dashboard_data() -> dict[str, Any]:
         "links": links,
         "nodes": nodes,
         "online_nodes": sum(1 for node in nodes if node_online(node)),
-        "healthy_links": sum(1 for link in links if link["ready"] and link["iran_online"] and link["foreign_online"] and link.get("active_transport") in {"direct", "reverse"}),
+        "healthy_links": sum(
+            1 for link in links
+            if link["ready"] and link["iran_online"] and link["foreign_online"]
+            and link.get("active_transport") in {"direct", "reverse"}
+        ),
     }

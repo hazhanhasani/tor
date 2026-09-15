@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from .config import GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
-from .db import init_db, list_locations
+from .db import get_setting, init_db, list_locations
 from .security import decrypt_secret
 
 
@@ -29,14 +29,55 @@ def atomic_write(path: Path, content: str, mode: int = 0o640) -> None:
             os.unlink(tmp_name)
 
 
+def _tor_bridge_lines() -> list[str]:
+    mode = (get_setting("tor_transport_mode", "direct") or "direct").strip().lower()
+    if mode == "direct":
+        return []
+    if mode != "obfs4":
+        raise RuntimeError(f"Unsupported Tor transport mode: {mode}")
+
+    obfs4 = shutil.which("obfs4proxy") or "/usr/bin/obfs4proxy"
+    if not Path(obfs4).exists():
+        raise RuntimeError(
+            "Tor bridge mode is enabled but obfs4proxy is not installed. "
+            "Install the obfs4proxy package or switch Tor transport mode to direct."
+        )
+
+    raw_lines = get_setting("tor_bridge_lines", "")
+    bridges: list[str] = []
+    for raw in raw_lines.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("bridge "):
+            line = line[7:].strip()
+        if not line.lower().startswith("obfs4 "):
+            raise RuntimeError("Every configured bridge must be an obfs4 bridge line.")
+        bridges.append(line)
+    if not bridges:
+        raise RuntimeError("Tor bridge mode is enabled but no obfs4 bridge lines were configured.")
+
+    return [
+        "UseBridges 1",
+        f"ClientTransportPlugin obfs4 exec {obfs4}",
+        *[f"Bridge {line}" for line in bridges],
+    ]
+
+
 def torrc_for(loc: dict) -> str:
     data_dir = TOR_DATA_DIR / loc["slug"]
-    return "\n".join([
-        "ClientOnly 1", f"DataDirectory {data_dir}",
+    lines = [
+        "ClientOnly 1",
+        f"DataDirectory {data_dir}",
         f"SocksPort 127.0.0.1:{int(loc['socks_port'])}",
-        f"ExitNodes {{{loc['country_code'].lower()}}}", "StrictNodes 1",
-        "AvoidDiskWrites 1", "Log notice syslog", "",
-    ])
+        f"ExitNodes {{{loc['country_code'].lower()}}}",
+        "StrictNodes 1",
+        "AvoidDiskWrites 1",
+        "Log notice syslog",
+    ]
+    lines.extend(_tor_bridge_lines())
+    lines.append("")
+    return "\n".join(lines)
 
 
 def gateway_config(locations: list[dict]) -> dict:

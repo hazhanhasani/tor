@@ -1,19 +1,24 @@
 {% extends "base.html" %}
 {% block title %}{{ 'ویرایش' if location else 'افزودن' }} لوکیشن | Tor Location Manager{% endblock %}
 {% block content %}
-<section class="page-head"><div><div class="eyebrow">TOR INSTANCE</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p class="muted">یک ExitNodes مستقل Tor برای این کشور اجرا می‌شود.</p></div></section>
+<section class="page-head"><div><div class="eyebrow">TOR INSTANCE + 3X-UI ROUTE</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p class="muted">برای هر کشور یک Tor مستقل، یک Inbound اختصاصی در 3x-ui و یک Outbound/Route اختصاصی ساخته می‌شود.</p></div></section>
 <section class="panel"><form method="post" class="stack">
   <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
   <div class="two">
     <label>نام نمایشی<input name="name" value="{{ location.name if location else '' }}" placeholder="Germany" required></label>
     <label>کد دوحرفی کشور<input name="country_code" value="{{ location.country_code if location else '' }}" placeholder="DE" maxlength="2" required></label>
   </div>
-  <label>پورت Gateway روی سرور Tor<input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>3x-ui به این پورت رمزنگاری‌شده Shadowsocks 2022 متصل می‌شود.</small></label>
-  <fieldset><legend>Inboundهای 3x-ui که باید از این کشور خارج شوند</legend>
+  <div class="two">
+    <label>پورت Inbound در 3x-ui<input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>این همان پورتی است که برای این لوکیشن داخل 3x-ui ساخته می‌شود. اگر خالی باشد یک پورت آزاد به‌صورت خودکار انتخاب می‌شود.</small></label>
+    <label>پورت Tor Gateway<input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت ارتباط رمزنگاری‌شده بین 3x-ui و این Tor Gateway است و باید با پورت Inbound متفاوت باشد.</small></label>
+  </div>
+  <div class="note"><strong>ساخت خودکار:</strong> برای این لوکیشن یک Inbound از نوع Shadowsocks 2022 با Tag مدیریت‌شده <code>torloc-in-...</code> ساخته می‌شود، یک Outbound اختصاصی به Tor Gateway ایجاد می‌شود و Routing بین آن‌ها خودکار اعمال خواهد شد.</div>
+  <fieldset><legend>Inboundهای موجود اضافی که باید از همین کشور خارج شوند</legend>
+  <p class="muted">اختیاری است. Inbound اختصاصی بالا همیشه خودکار ساخته می‌شود؛ این بخش فقط برای Route کردن Inboundهای موجود شما به همان خروجی Tor است.</p>
   {% if inbounds %}<div class="checks">{% for item in inbounds %}
     <label class="check row"><input type="checkbox" name="inbound_tags" value="{{ item.tag }}" {% if location and item.tag in location.inbound_tags %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }} · port {{ item.port }} · {{ item.tag }}</small></span></label>
-  {% endfor %}</div>{% else %}<p class="muted">Inbound قابل دریافت نیست. ابتدا اتصال 3x-ui را تنظیم و تست کنید.</p>{% endif %}</fieldset>
+  {% endfor %}</div>{% else %}<p class="muted">Inbound دستی دیگری دریافت نشد؛ مشکلی نیست، Inbound اختصاصی این لوکیشن خودکار ساخته می‌شود.</p>{% endif %}</fieldset>
   <label class="check"><input type="checkbox" name="enabled" {% if not location or location.enabled %}checked{% endif %}> لوکیشن فعال باشد</label>
-  <div class="actions"><button class="button primary" type="submit">ذخیره و اعمال خودکار</button><a class="button" href="{{ url_for('index') }}">انصراف</a></div>
+  <div class="actions"><button class="button primary" type="submit">ذخیره و ساخت Inbound/Outbound</button><a class="button" href="{{ url_for('index') }}">انصراف</a></div>
 </form></section>
 {% endblock %}

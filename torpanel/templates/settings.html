@@ -3,13 +3,12 @@
 {% block title %}اتصال و شبکه | Tor Location Manager{% endblock %}
 {% block content %}
 <section class="page-head">
-  <div><div class="eyebrow">CONNECTION & NETWORK</div><h1>اتصال و شبکه</h1><p>3x-ui API، Gateway و روش اتصال Tor روی سرورهای عادی یا شبکه‌های محدود را مدیریت کنید.</p></div>
-  <form method="post" action="{{ url_for('settings_test') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('pulse') }} تست اتصال 3x-ui</button></form>
+  <div><div class="eyebrow">CONNECTION & NETWORK</div><h1>اتصال و شبکه</h1><p>3x-ui، PasarGuard، Gateway و روش اتصال Tor روی سرورهای عادی یا شبکه‌های محدود را مدیریت کنید.</p></div>
 </section>
 
 <div class="connection-grid">
   <section class="panel">
-    <div class="section-title"><div><h2>اتصال به 3x-ui</h2><p>API رسمی پنل برای ساخت و همگام‌سازی Inbound/Outboundها</p></div><span class="status {{ 'ok' if has_token and xui_base_url else 'warn' }}">{{ 'پیکربندی شده' if has_token and xui_base_url else 'ناقص' }}</span></div>
+    <div class="section-title"><div><h2>اتصال به 3x-ui</h2><p>ساخت Inbound اختصاصی و همگام‌سازی Outbound/Routeها</p></div><span class="status {{ 'ok' if has_token and xui_base_url else 'warn' }}">{{ 'پیکربندی شده' if has_token and xui_base_url else 'ناقص' }}</span></div>
     <form method="post" class="stack">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <label class="field"><span>آدرس کامل 3x-ui</span><input name="xui_base_url" value="{{ xui_base_url }}" placeholder="https://panel.example.com:2053/basepath" required><small>همان URL اصلی پنل همراه base path؛ عبارت <code>/panel/api</code> را اضافه نکنید.</small></label>
@@ -28,11 +27,14 @@
         </div>
         <div class="bridge-fields" data-bridge-fields data-hidden="{{ 'false' if tor_transport_mode == 'obfs4' else 'true' }}" style="margin-top:13px">
           <label class="field"><span>Bridgeهای obfs4</span><textarea name="tor_bridge_lines" rows="7" class="mono" placeholder="obfs4 IP:PORT FINGERPRINT cert=... iat-mode=0">{{ tor_bridge_lines }}</textarea><small>هر Bridge یک خط. تعداد فعلی: {{ bridge_count }}. مقدار <code>Bridge </code> ابتدای خط اختیاری است.</small></label>
-          <div class="callout warning" style="margin-top:10px"><strong>نکته:</strong> فعال‌کردن Bridge بدون Bridge معتبر باعث می‌شود Tor instanceها بالا نیایند. پروژه قبل از اعمال، ساختار خطوط را بررسی می‌کند.</div>
+          <div class="callout warning" style="margin-top:10px"><strong>نکته:</strong> فعال‌کردن Bridge بدون Bridge معتبر باعث می‌شود Tor instanceها بالا نیایند.</div>
         </div>
       </div>
 
-      <div class="actions"><button class="button primary" type="submit">{{ icon('check') }} ذخیره و اعمال تنظیمات</button></div>
+      <div class="actions">
+        <button class="button primary" type="submit">{{ icon('check') }} ذخیره 3x-ui و Tor</button>
+        <button class="button" type="submit" formaction="{{ url_for('settings_test') }}">{{ icon('pulse') }} تست 3x-ui</button>
+      </div>
     </form>
   </section>
 
@@ -50,14 +52,36 @@
     <section class="panel">
       <div class="section-title"><div><h2>راهنمای خطا</h2><p>معنی پاسخ‌های رایج API</p></div></div>
       <div class="quick-list">
-        <div class="callout"><strong>HTTP 401</strong><br>توکن اشتباه، حذف‌شده، غیرفعال یا منقضی است.</div>
-        <div class="callout"><strong>HTTP 403</strong><br>توکن معتبر است اما scope مدیریتی کافی ندارد.</div>
-        <div class="callout"><strong>HTTP 404</strong><br>URL یا Base Path پنل اشتباه وارد شده است.</div>
-        <div class="callout"><strong>Timeout</strong><br>مسیر شبکه، فایروال یا دسترسی بین دو سرور را بررسی کنید.</div>
+        <div class="callout"><strong>HTTP 401</strong><br>توکن یا API Key اشتباه، حذف‌شده یا منقضی است.</div>
+        <div class="callout"><strong>HTTP 403</strong><br>اعتبارنامه معتبر است اما دسترسی مدیریتی کافی ندارد.</div>
+        <div class="callout"><strong>HTTP 404</strong><br>URL، Base Path یا Core ID اشتباه است.</div>
+        <div class="callout"><strong>Timeout</strong><br>مسیر شبکه، فایروال یا دسترسی بین سرورها را بررسی کنید.</div>
       </div>
     </section>
-
-    <section class="status-banner success"><div class="status-icon">{{ icon('shield') }}</div><div><strong>Sync ایمن</strong><p>فقط Tagهای مدیریت‌شده با پیشوند <code>torloc-</code> تغییر می‌کنند و تنظیمات دستی دیگر دست‌نخورده می‌مانند.</p></div></section>
   </aside>
 </div>
+
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>PasarGuard</h2><p>اتصال به Core API برای Routing مستقیم Tor و Hybrid Tunnel روی Inboundهای PasarGuard</p></div><span class="status {{ 'ok' if pasarguard_has_key and pasarguard_base_url and pasarguard_core_id else 'warn' }}">{{ 'پیکربندی شده' if pasarguard_has_key and pasarguard_base_url and pasarguard_core_id else 'ناقص' }}</span></div>
+  <form method="post" action="{{ url_for('settings_pasarguard') }}" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="two">
+      <label class="field"><span>آدرس PasarGuard</span><input name="pasarguard_base_url" value="{{ pasarguard_base_url }}" placeholder="https://panel.example.com" required><small>Base URL اصلی؛ مسیر <code>/api/core</code> را اضافه نکنید.</small></label>
+      <label class="field"><span>Core ID</span><input name="pasarguard_core_id" type="number" min="1" value="{{ pasarguard_core_id }}" placeholder="1" required><small>Coreای که Inboundها و Routing آن توسط این پروژه مدیریت می‌شود.</small></label>
+    </div>
+    <label class="field"><span>PasarGuard API Key</span><input name="pasarguard_api_key" type="password" autocomplete="new-password" placeholder="{{ 'API Key ذخیره شده — برای تغییر مقدار جدید وارد کنید' if pasarguard_has_key else 'pg_key_...' }}"><small>کلید باید حداقل مجوز <code>cores.read</code> و <code>cores.update</code> داشته باشد و رمزگذاری‌شده ذخیره می‌شود.</small></label>
+    <label class="field"><span>Gateway Host برای Tor</span><input name="pasarguard_gateway_host" value="{{ pasarguard_gateway_host }}" placeholder="127.0.0.1 یا IP سرور Gateway"><small>اگر PasarGuard Core روی همان سرور ایران اجرا می‌شود، معمولاً آدرس محلی یا آدرس قابل دسترس Gateway مناسب است.</small></label>
+    <div class="two">
+      <label class="check check-card"><input type="checkbox" name="pasarguard_verify_tls" {% if pasarguard_verify_tls %}checked{% endif %}><span><b>TLS بررسی شود</b><small>در Production روشن بماند.</small></span></label>
+      <label class="check check-card"><input type="checkbox" name="pasarguard_restart_nodes" {% if pasarguard_restart_nodes %}checked{% endif %}><span><b>بعد از تغییر Core، Nodeها Restart شوند</b><small>تغییر Route سریع‌تر روی Nodeهای مرتبط اعمال می‌شود.</small></span></label>
+    </div>
+    <div class="callout warning"><strong>Hybrid Tunnel + PasarGuard:</strong> Core انتخابی باید روی همان سرور ایران/Nodeای اجرا شود که Iran Agent این Tunnel و IP Overlay را دارد. یک Core مشترک روی Nodeهای متعدد بدون Overlay یکسان نباید به Route Tunnel متصل شود.</div>
+    <div class="actions">
+      <button class="button primary" type="submit">{{ icon('check') }} ذخیره PasarGuard</button>
+      <button class="button" type="submit" formaction="{{ url_for('settings_pasarguard_test') }}">{{ icon('pulse') }} تست PasarGuard</button>
+    </div>
+  </form>
+</section>
+
+<section class="status-banner success" style="margin-top:16px"><div class="status-icon">{{ icon('shield') }}</div><div><strong>Sync ایزوله</strong><p>برای 3x-ui فقط Tagهای <code>torloc-</code> و <code>tlm-tunnel-</code> و برای PasarGuard فقط <code>tlm-pg-</code> مدیریت می‌شوند؛ Outbound و Ruleهای دستی دیگر حذف یا بازنویسی نمی‌شوند.</p></div></section>
 {% endblock %}

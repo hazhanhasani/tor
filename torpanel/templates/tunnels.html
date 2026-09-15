@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}تانل ترکیبی | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">HYBRID IRAN ↔ FOREIGN OVERLAY</div><h1>تانل ترکیبی هوشمند</h1><p>WireGuard مستقیم برای سرعت، Reverse FRP رمزنگاری‌شده برای مسیر پشتیبان، Failover خودکار و Overlay خصوصی بدون انتشار IP سرور خارج در کانفیگ کاربران.</p></div>
+</section>
+
+{% if tunnel_error %}<div class="alert danger">{{ tunnel_error }}</div>{% endif %}
+
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-icon">{{ icon('route') }}</div><div><div class="value">{{ links|length }}</div><div class="label">Tunnel Link</div></div></div>
+  <div class="stat-card"><div class="stat-icon">{{ icon('server') }}</div><div><div class="value">{{ nodes|length }}</div><div class="label">Node ثبت‌شده</div></div></div>
+  <div class="stat-card"><div class="stat-icon success">{{ icon('pulse') }}</div><div><div class="value">{{ online_nodes }}</div><div class="label">Node آنلاین</div></div></div>
+  <div class="stat-card"><div class="stat-icon {{ 'success' if healthy_links else 'warning' }}">{{ icon('shield') }}</div><div><div class="value">{{ healthy_links }}</div><div class="label">Link سالم</div></div></div>
+</div>
+
+<div class="section-grid tunnel-create-grid">
+  <section class="panel">
+    <div class="section-title"><div><h2>ساخت اتصال جدید</h2><p>برای هر اتصال دو دستور یک‌خطی، یکی برای ایران و یکی برای خارج ساخته می‌شود.</p></div></div>
+    <form method="post" action="{{ url_for('tunnels.tunnel_new') }}" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>نام اتصال<input name="name" placeholder="Iran-1 ↔ Germany-1" required maxlength="80"></label>
+      <div class="two">
+        <label>حالت مسیر
+          <select name="mode">
+            <option value="auto" selected>Auto — WireGuard + Reverse Failover</option>
+            <option value="direct">Direct — فقط WireGuard</option>
+            <option value="reverse">Reverse — فقط FRP Reverse</option>
+          </select>
+          <small>Auto ابتدا مسیر مستقیم را استفاده می‌کند و در قطعی به Reverse برمی‌گردد.</small>
+        </label>
+        <label>Health timeout<input type="number" name="health_timeout" value="45" min="15" max="300"><small>زمان تشخیص خرابی مسیر به ثانیه.</small></label>
+      </div>
+      <label class="check"><input type="checkbox" name="kill_switch" checked> محافظت IP و Kill-switch فعال باشد</label>
+      <button class="button primary" type="submit">{{ icon('plus') }} ساخت Tunnel و دستورات نصب</button>
+    </form>
+  </section>
+
+  <aside class="panel">
+    <div class="section-title"><div><h2>Controller URL</h2><p>Nodeها از این آدرس تنظیمات را دریافت می‌کنند.</p></div></div>
+    <form method="post" action="{{ url_for('tunnels.tunnel_controller_url') }}" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>URL عمومی پنل<input name="controller_url" value="{{ controller_url }}" placeholder="https://panel.example.com"><small>برای Production استفاده از HTTPS توصیه می‌شود. اگر خالی بگذارید Host فعلی پنل استفاده می‌شود.</small></label>
+      <button class="button" type="submit">ذخیره Controller URL</button>
+    </form>
+    <div class="status-banner info compact-banner">
+      <div class="status-icon">{{ icon('shield') }}</div>
+      <div><strong>مدل جلوگیری از IP Leak</strong><p>ترافیک سرویس از IPهای Overlay عبور می‌کند؛ IP واقعی خارج داخل لینک کاربر قرار نمی‌گیرد. خود دو سرور و اپراتور شبکه همچنان endpoint شبکه را مشاهده می‌کنند و هیچ طراحی شبکه‌ای نمی‌تواند آن را از peer مستقیم مخفی کند.</p></div>
+    </div>
+  </aside>
+</div>
+
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>اتصال‌ها</h2><p>هر Node می‌تواند با ایجاد Linkهای بیشتر در معماری توسعه پیدا کند؛ محدودیت مصنوعی در UI وجود ندارد و ظرفیت واقعی تابع منابع و محدوده آدرس/پورت است.</p></div></div>
+  {% if links %}
+  <div class="tunnel-list">
+    {% for link in links %}
+    <a class="tunnel-row" href="{{ url_for('tunnels.tunnel_detail', link_uuid=link.uuid) }}">
+      <div class="tunnel-row-main">
+        <div class="tunnel-icon">{{ icon('route') }}</div>
+        <div><strong>{{ link.name }}</strong><small>{{ link.iran_overlay_ip }} ↔ {{ link.foreign_overlay_ip }} · {{ link.subnet_cidr }}</small></div>
+      </div>
+      <div class="tunnel-node-state"><span class="health-dot {{ 'online' if link.iran_online else 'warning' }}"></span><span>ایران</span></div>
+      <div class="tunnel-node-state"><span class="health-dot {{ 'online' if link.foreign_online else 'warning' }}"></span><span>خارج</span></div>
+      <span class="status {{ 'ok' if link.active_transport in ['direct','reverse'] else 'off' }}">{% if link.active_transport == 'direct' %}WireGuard{% elif link.active_transport == 'reverse' %}Reverse{% elif link.active_transport == 'down' %}قطع{% else %}در انتظار{% endif %}</span>
+      <span class="chev">{{ icon('chevron') }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state"><div class="empty-illustration">{{ icon('route') }}</div><h2>هنوز Tunnel ساخته نشده</h2><p>از فرم بالا اولین اتصال ایران ↔ خارج را بسازید؛ سپس دو دستور نصب آماده می‌شود.</p></div>
+  {% endif %}
+</section>
+
+{% if nodes %}
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>Nodeها</h2><p>Agent هر Node به‌صورت outbound با Controller ارتباط می‌گیرد و وضعیت مسیر را گزارش می‌کند.</p></div></div>
+  <div class="node-grid">
+    {% for node in nodes %}
+    <div class="node-card">
+      <span class="country-badge">{{ 'IR' if node.role == 'iran' else 'EXT' }}</span>
+      <div><strong>{{ node.name }}</strong><small>{{ 'سرور ایران' if node.role == 'iran' else 'سرور خارج' }} · Agent {{ node.agent_version or '—' }}</small></div>
+      <span class="status {{ 'ok' if node.last_seen else 'off' }}">{{ 'ثبت‌شده' if node.last_seen else 'جدید' }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

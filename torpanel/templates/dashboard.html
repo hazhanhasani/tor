@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}داشبورد | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">SYSTEM OVERVIEW</div><h1>داشبورد</h1><p>وضعیت Tor، Gateway، اتصال 3x-ui و لوکیشن‌ها را یکجا ببینید.</p></div>
+  <div class="page-actions">
+    <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} Sync کامل</button></form>
+    <a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} لوکیشن جدید</a>
+  </div>
+</section>
+
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-icon">{{ icon('globe') }}</div><div><div class="value">{{ locations|length }}</div><div class="label">کل لوکیشن‌ها</div></div></div>
+  <div class="stat-card"><div class="stat-icon success">{{ icon('pulse') }}</div><div><div class="value">{{ active_count }}</div><div class="label">Tor فعال</div></div></div>
+  <div class="stat-card"><div class="stat-icon {{ 'success' if configured else 'warning' }}">{{ icon('link') }}</div><div><div class="value">{{ 'OK' if configured else '—' }}</div><div class="label">اتصال 3x-ui</div></div></div>
+  <div class="stat-card"><div class="stat-icon {{ 'success' if gateway_state.active == 'active' else 'warning' }}">{{ icon('server') }}</div><div><div class="value">{{ 'UP' if gateway_state.active == 'active' else 'OFF' }}</div><div class="label">Xray Gateway</div></div></div>
+</div>
+
+<div class="section-grid">
+  <section class="panel">
+    <div class="section-title"><div><h2>سلامت سیستم</h2><p>وضعیت اجزای اصلی سرویس</p></div><a class="button small" href="{{ url_for('logs') }}">{{ icon('terminal') }} لاگ‌ها</a></div>
+    <div class="quick-list">
+      <div class="status-banner {{ 'success' if configured else 'warning' }}"><div class="status-icon">{{ icon('link') }}</div><div><strong>{{ 'اتصال 3x-ui پیکربندی شده است' if configured else '3x-ui هنوز متصل نشده است' }}</strong><p>{{ 'API Token و URL ذخیره شده‌اند و برای Sync آماده‌اند.' if configured else 'برای ساخت Inbound/Outbound خودکار ابتدا اتصال پنل اصلی را کامل کنید.' }}</p></div></div>
+      <div class="status-banner {{ 'success' if gateway_state.active == 'active' else 'warning' }}"><div class="status-icon">{{ icon('server') }}</div><div><strong>Xray Gateway: {{ gateway_state.active }}</strong><p>Sub-state: {{ gateway_state.sub }} · مسیر رمزنگاری‌شده بین 3x-ui و Tor</p></div></div>
+      <div class="status-banner {{ 'success' if active_count == enabled_count else 'warning' }}"><div class="status-icon">{{ icon('shield') }}</div><div><strong>{{ active_count }} از {{ enabled_count }} لوکیشن فعال</strong><p>روش دسترسی Tor: {{ 'obfs4 Bridge' if transport_mode == 'obfs4' else 'Direct' }}</p></div></div>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="section-title"><div><h2>دسترسی سریع</h2><p>عملیات پرتکرار</p></div></div>
+    <div class="quick-list">
+      <a class="quick-item" href="{{ url_for('index') }}"><span class="quick-icon">{{ icon('globe') }}</span><span><strong>مدیریت لوکیشن‌ها</strong><small>پورت‌ها، Routeها و خروجی کشورها</small></span><span class="chev">{{ icon('chevron') }}</span></a>
+      <a class="quick-item" href="{{ url_for('settings') }}"><span class="quick-icon">{{ icon('link') }}</span><span><strong>اتصال و شبکه</strong><small>3x-ui، TLS و Bridgeهای ایران</small></span><span class="chev">{{ icon('chevron') }}</span></a>
+      <a class="quick-item" href="{{ url_for('updates') }}"><span class="quick-icon">{{ icon('update') }}</span><span><strong>مرکز بروزرسانی</strong><small>نسخه فعلی v{{ ui_current_version }}</small></span><span class="chev">{{ icon('chevron') }}</span></a>
+    </div>
+  </aside>
+</div>
+
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>آخرین لوکیشن‌ها</h2><p>وضعیت سریع خروجی‌های تعریف‌شده</p></div><a class="button small" href="{{ url_for('index') }}">مشاهده همه</a></div>
+  {% if recent_locations %}
+  <div class="location-grid">
+    {% for loc in recent_locations %}
+    <article class="location-card">
+      <div class="location-head"><div class="location-title"><span class="country-badge">{{ loc.country_code }}</span><div><h2>{{ loc.name }}</h2><span class="slug">{{ loc.slug }}</span></div></div><span class="status {{ 'ok' if loc.active else 'off' }}">{{ 'فعال' if loc.active else 'متوقف' }}</span></div>
+      <div class="location-route"><div class="route-node"><b>3x-ui</b><span>{{ loc.xui_inbound_port or 'Auto' }}</span></div><span class="route-arrow">→</span><div class="route-node"><b>Gateway</b><span>{{ loc.gateway_port }}</span></div><span class="route-arrow">→</span><div class="route-node"><b>Tor {{ loc.country_code }}</b><span>{{ loc.socks_port }}</span></div></div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state"><div class="empty-illustration">{{ icon('globe') }}</div><h2>هنوز لوکیشنی ندارید</h2><p>اولین کشور را بسازید تا Inbound، Outbound و Route اختصاصی به‌صورت خودکار ایجاد شوند.</p><a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} ساخت اولین لوکیشن</a></div>
+  {% endif %}
+</section>
+{% endblock %}

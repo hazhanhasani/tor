@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m compileall -q torpanel
-          bash -n install.sh bootstrap.sh scripts/tor-location-manager-update
+          bash -n install.sh bootstrap.sh scripts/tor-location-manager-update scripts/install-xray
           pytest -q
 
       - name: Build release package

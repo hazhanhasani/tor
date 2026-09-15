@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f4f7fb">
+  <script>document.documentElement.classList.add('js');try{const t=localStorage.getItem('tlm-theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}</script>
   <title>{% block title %}Tor Location Manager{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>

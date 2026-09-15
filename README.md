@@ -58,11 +58,21 @@ Germany Tor exit
 - رمزگذاری API Token و کلیدهای SS در دیتابیس با Fernet
 - CSRF protection و session login
 - تست config Xray قبل از جایگزینی Gateway config
+- Update Center داخل پنل
+- تشخیص GitHub Release رسمی
+- بررسی SHA-256 قبل از نصب نسخه جدید
+- Backup خودکار قبل از Update
+- Health Check بعد از نصب
+- Rollback خودکار در صورت خراب بودن نسخه جدید
+- نگهداری ۵ Backup آخر
+- Installer idempotent؛ نصب مجدد credentialها، DB و تنظیمات 3x-ui را پاک نمی‌کند
 
 ## نیازمندی
 
 - Ubuntu / Debian
+- معماری amd64 یا arm64
 - دسترسی root
+- systemd
 - پورت Web Panel پیش‌فرض: `8787/tcp`
 - برای هر Location یک Gateway TCP port که باید بین سرور 3x-ui و سرور Tor قابل دسترس باشد
 - 3x-ui جدید با API Token و endpointهای `/panel/api/xray/*`
@@ -71,12 +81,30 @@ Germany Tor exit
 
 OpenAPI خود پنل: `<PANEL_URL>/panel/api/openapi.json`
 
-## نصب سریع
+## نصب حرفه‌ای از Release
+
+بعد از انتشار اولین GitHub Release می‌توانید آخرین نسخه رسمی و checksumدار را با Bootstrap نصب کنید:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hazhanhasani/tor/main/bootstrap.sh | sudo bash
+```
+
+Bootstrap آخرین Release را پیدا می‌کند، Asset رسمی و فایل SHA-256 را دانلود می‌کند، checksum را بررسی می‌کند و سپس Installer را اجرا می‌کند.
+
+## نصب از سورس
 
 ```bash
 git clone https://github.com/hazhanhasani/tor.git
 cd tor
 sudo bash install.sh
+```
+
+اگر نصب قبلی وجود داشته باشد، Installer آن را Upgrade درجا در نظر می‌گیرد و فایل‌های پایدار زیر را حفظ می‌کند:
+
+```text
+/etc/tor-location-manager/panel.env
+/var/lib/tor-location-manager/panel.db
+/var/lib/tor-location-manager/tor/
 ```
 
 بعد از نصب، URL و اطلاعات ورود در ترمینال چاپ می‌شود و یک نسخه root-only نیز در مسیر زیر ذخیره می‌شود:
@@ -116,6 +144,51 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 
 بعد از Save، پروژه Tor instance و Xray Gateway را می‌سازد، config فعلی Xray را از 3x-ui می‌خواند، Outbound اختصاصی `torloc-<slug>` و Rule مبتنی بر `inboundTag` را اضافه می‌کند و آن را از endpoint رسمی `/panel/api/xray/update` اعمال می‌کند.
 
+## بروزرسانی از داخل پنل
+
+در منوی **بروزرسانی** نسخه نصب‌شده و آخرین GitHub Release نمایش داده می‌شود. نصب از پنل فقط زمانی فعال می‌شود که Release دارای هر دو Asset زیر باشد:
+
+```text
+tor-location-manager-vX.Y.Z.tar.gz
+tor-location-manager-vX.Y.Z.tar.gz.sha256
+```
+
+روند Update:
+
+1. پنل آخرین Release رسمی را از GitHub بررسی می‌کند.
+2. updater مستقل systemd شروع می‌شود؛ Web Panel دسترسی مستقیم root به فایل‌های سیستم ندارد.
+3. Asset و SHA-256 از همان Release دانلود می‌شوند.
+4. checksum بررسی می‌شود.
+5. از کد فعلی، دیتابیس، `panel.env`، sudoers و unitهای systemd Backup گرفته می‌شود.
+6. نسخه جدید نصب می‌شود و credentialها و دیتابیس حفظ می‌شوند.
+7. `/healthz` بررسی می‌شود.
+8. اگر Health Check شکست بخورد، برنامه، DB و سرویس‌ها به نسخه قبلی Rollback می‌شوند.
+9. ۵ Backup آخر در `/var/backups/tor-location-manager/` نگهداری می‌شود.
+
+لاگ Update:
+
+```text
+/var/lib/tor-location-manager/update.log
+```
+
+## انتشار نسخه جدید
+
+شماره نسخه را در هر دو فایل زیر یکسان کنید:
+
+```text
+VERSION
+pyproject.toml
+```
+
+مثلاً برای نسخه `1.2.0`، Tag زیر را منتشر کنید:
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Workflow `Release` به‌صورت خودکار نسخه را اعتبارسنجی می‌کند، تست‌ها را اجرا می‌کند، بسته Release و checksum را می‌سازد و GitHub Release را منتشر می‌کند. بعد از آن سرورهای نصب‌شده می‌توانند همان نسخه را از Update Center نصب کنند.
+
 ## نکات Tor
 
 `ExitNodes {de}` به معنی تضمین وجود Exit در هر لحظه نیست. اگر برای یک کشور Exit مناسب در شبکه Tor موجود نباشد، آن Location ممکن است تا زمان پیدا شدن مسیر قابل استفاده نباشد. گزینه `StrictNodes 1` عمداً فعال است تا Tor در چنین شرایطی به کشور دیگری fallback نکند.
@@ -128,9 +201,16 @@ Tor برای TCP طراحی شده است. این پروژه UDP را در Gatew
 systemctl status tor-location-panel
 systemctl status tor-location-gateway
 systemctl status tor-location@de-xxxx
+systemctl status tor-location-manager-update
 journalctl -u tor-location-panel -f
 journalctl -u tor-location-gateway -f
-journalctl -u tor-location@de-xxxx -f
+journalctl -u tor-location-manager-update -f
+```
+
+Health endpoint:
+
+```text
+http://127.0.0.1:8787/healthz
 ```
 
 ## تست توسعه
@@ -139,6 +219,9 @@ journalctl -u tor-location@de-xxxx -f
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
+pip install -e .
+python -m compileall -q torpanel
+bash -n install.sh bootstrap.sh scripts/tor-location-manager-update
 pytest -q
 ```
 

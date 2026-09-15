@@ -1,0 +1,35 @@
+{% from 'components/icons.html' import icon %}
+<aside class="sidebar" id="appSidebar" aria-label="ناوبری اصلی">
+  <div class="sidebar-brand">
+    <a href="{{ url_for('dashboard') }}" class="brand-lockup">
+      <span class="brand-mark">T</span>
+      <span><strong>Tor Location</strong><small>3x-ui Multi-Exit Manager</small></span>
+    </a>
+    <button class="icon-button sidebar-close" type="button" data-sidebar-close aria-label="بستن منو">{{ icon('x') }}</button>
+  </div>
+
+  <div class="sidebar-status">
+    <span class="health-dot {{ 'online' if ui_configured else 'warning' }}"></span>
+    <div><strong>{{ '3x-ui متصل شده' if ui_configured else 'نیاز به اتصال 3x-ui' }}</strong><small>Tor: {{ 'obfs4 Bridge' if ui_transport_mode == 'obfs4' else 'Direct' }}</small></div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">مدیریت</div>
+    <a class="nav-item {{ 'active' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">{{ icon('dashboard') }}<span>داشبورد</span></a>
+    <a class="nav-item {{ 'active' if request.endpoint in ['index','location_new','location_edit'] else '' }}" href="{{ url_for('index') }}">{{ icon('globe') }}<span>لوکیشن‌ها</span></a>
+    <a class="nav-item {{ 'active' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">{{ icon('link') }}<span>اتصال و شبکه</span></a>
+
+    <div class="nav-section-label">سیستم</div>
+    <a class="nav-item {{ 'active' if request.endpoint and request.endpoint.startswith('updates') else '' }}" href="{{ url_for('updates') }}">{{ icon('update') }}<span>بروزرسانی</span>{% if update_badge %}<span class="nav-pill">جدید</span>{% endif %}</a>
+    <a class="nav-item {{ 'active' if request.endpoint == 'logs' else '' }}" href="{{ url_for('logs') }}">{{ icon('terminal') }}<span>لاگ و سلامت</span></a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="version-chip"><span>نسخه</span><strong>v{{ ui_current_version }}</strong></div>
+    <form method="post" action="{{ url_for('logout') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="nav-item logout-item" type="submit">{{ icon('logout') }}<span>خروج از پنل</span></button>
+    </form>
+  </div>
+</aside>
+<div class="sidebar-backdrop" data-sidebar-close></div>

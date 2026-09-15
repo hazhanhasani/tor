@@ -7,6 +7,7 @@ NAME=""
 ADVERTISE_HOST=""
 INSECURE=0
 ALLOW_HTTP=0
+UPGRADE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -16,15 +17,19 @@ while [[ $# -gt 0 ]]; do
     --advertise-host) ADVERTISE_HOST="${2:-}"; shift 2 ;;
     --insecure) INSECURE=1; shift ;;
     --allow-http) ALLOW_HTTP=1; shift ;;
+    --upgrade) UPGRADE=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "Run as root or with sudo." >&2; exit 1; }
-[[ -n "$PANEL" && -n "$TOKEN" && -n "$NAME" ]] || {
-  echo "Usage: bootstrap --panel URL --token TOKEN --name NAME [--advertise-host HOST]" >&2
-  exit 2
-}
+[[ -n "$PANEL" ]] || { echo "--panel URL is required." >&2; exit 2; }
+if [[ $UPGRADE -eq 0 ]]; then
+  [[ -n "$TOKEN" && -n "$NAME" ]] || {
+    echo "Usage: bootstrap --panel URL --token TOKEN --name NAME [--advertise-host HOST]" >&2
+    exit 2
+  }
+fi
 PANEL="${PANEL%/}"
 case "$PANEL" in
   https://*) ;;
@@ -40,7 +45,7 @@ if [[ -n "${TLM_APT_PROXY:-}" ]]; then
 fi
 
 NEED_APT=0
-for cmd in python3 curl wg wg-quick ping nft; do
+for cmd in python3 curl wg wg-quick ping nft ip; do
   command -v "$cmd" >/dev/null 2>&1 || NEED_APT=1
 done
 if [[ $NEED_APT -eq 1 ]]; then
@@ -65,14 +70,22 @@ echo "Downloading node agent from controller..."
 curl "${curl_args[@]}" "$PANEL/api/tunnels/agent.py" -o "$AGENT"
 chmod 0700 "$AGENT"
 
-args=(install --panel "$PANEL" --token "$TOKEN" --name "$NAME")
-[[ -n "$ADVERTISE_HOST" ]] && args+=(--advertise-host "$ADVERTISE_HOST")
+if [[ $UPGRADE -eq 1 ]]; then
+  args=(upgrade --panel "$PANEL")
+else
+  args=(install --panel "$PANEL" --token "$TOKEN" --name "$NAME")
+  [[ -n "$ADVERTISE_HOST" ]] && args+=(--advertise-host "$ADVERTISE_HOST")
+fi
 [[ $INSECURE -eq 1 ]] && args+=(--insecure)
 [[ $ALLOW_HTTP -eq 1 ]] && args+=(--allow-http)
 
 python3 "$AGENT" "${args[@]}"
 
 echo
-echo "Node installation completed."
+if [[ $UPGRADE -eq 1 ]]; then
+  echo "Node agent upgrade completed."
+else
+  echo "Node installation completed."
+fi
 echo "Status: systemctl status tor-location-node-agent --no-pager -l"
 echo "Logs:   journalctl -u tor-location-node-agent -f"

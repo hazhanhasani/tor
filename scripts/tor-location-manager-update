@@ -12,11 +12,36 @@ REPO="hazhanhasani/tor"
 APP_DIR="/opt/tor-location-manager"
 ETC_DIR="/etc/tor-location-manager"
 DATA_DIR="/var/lib/tor-location-manager"
+ENV_FILE="$ETC_DIR/panel.env"
 STATE_FILE="$DATA_DIR/update-state.json"
 LOG_FILE="$DATA_DIR/update.log"
 BACKUP_ROOT="/var/backups/tor-location-manager"
 LOCK_FILE="/run/lock/tor-location-manager-update.lock"
 TAG="${1:-}"
+
+read_env_value() {
+  local key="$1" fallback="${2:-}"
+  python3 - "$ENV_FILE" "$key" "$fallback" <<'PY'
+import pathlib, sys
+path, key, fallback = sys.argv[1:]
+p = pathlib.Path(path)
+if not p.exists():
+    print(fallback); raise SystemExit
+value = None
+for raw in p.read_text(encoding='utf-8').splitlines():
+    line=raw.strip()
+    if not line or line.startswith('#') or '=' not in line:
+        continue
+    k,v=line.split('=',1)
+    if k.strip()==key:
+        value=v.strip().strip('"')
+print(fallback if value is None else value)
+PY
+}
+
+API_BASE="$(read_env_value TORPANEL_GITHUB_API_BASE https://api.github.com)"
+MIRROR_BASE="$(read_env_value TORPANEL_RELEASE_MIRROR_BASE '')"
+DOWNLOAD_PROXY="$(read_env_value TORPANEL_DOWNLOAD_PROXY '')"
 
 mkdir -p "$DATA_DIR" "$BACKUP_ROOT" "$(dirname "$LOCK_FILE")"
 touch "$LOG_FILE"
@@ -66,30 +91,80 @@ echo "=== Updating Tor Location Manager to $TAG ==="
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+API="${API_BASE%/}/repos/$REPO/releases/tags/$TAG"
 JSON="$TMP/release.json"
-curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: TorLocationManager-Updater' "$API" -o "$JSON"
+
+curl_common=(--silent --show-error --location --connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 --retry-all-errors)
+if [[ -n "$DOWNLOAD_PROXY" ]]; then
+  curl_common+=(--proxy "$DOWNLOAD_PROXY")
+fi
+
+fetch_url() {
+  local url="$1" out="$2"
+  curl "${curl_common[@]}" --fail "$url" -o "$out"
+}
+
+fetch_api_asset() {
+  local url="$1" out="$2"
+  curl "${curl_common[@]}" --fail \
+    -H 'Accept: application/octet-stream' \
+    -H 'User-Agent: TorLocationManager-Updater' \
+    "$url" -o "$out"
+}
+
+curl "${curl_common[@]}" --fail \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'User-Agent: TorLocationManager-Updater' \
+  "$API" -o "$JSON"
+
 ASSET="tor-location-manager-$TAG.tar.gz"
 SUM_ASSET="$ASSET.sha256"
-readarray -t URLS < <(python3 - "$JSON" "$ASSET" "$SUM_ASSET" <<'PY'
+readarray -t META < <(python3 - "$JSON" "$ASSET" "$SUM_ASSET" <<'PY'
 import json, sys
 obj=json.load(open(sys.argv[1], encoding='utf-8'))
-assets={a.get('name'):a.get('browser_download_url') for a in obj.get('assets',[])}
-for name in sys.argv[2:]:
-    url=assets.get(name)
-    if not url: raise SystemExit(f'missing release asset: {name}')
-    print(url)
+assets={a.get('name'):a for a in obj.get('assets',[]) if isinstance(a, dict)}
+pkg=assets.get(sys.argv[2])
+chk=assets.get(sys.argv[3])
+if not pkg:
+    raise SystemExit(f'missing release asset: {sys.argv[2]}')
+print(pkg.get('browser_download_url') or '')
+print(pkg.get('url') or '')
+print(pkg.get('digest') or '')
+print((chk or {}).get('browser_download_url') or '')
+print((chk or {}).get('url') or '')
 PY
 )
-curl -fL --retry 3 "${URLS[0]}" -o "$TMP/$ASSET"
-curl -fL --retry 3 "${URLS[1]}" -o "$TMP/$SUM_ASSET"
-(
-  cd "$TMP"
-  sha256sum -c "$SUM_ASSET"
-)
+
+PACKAGE="$TMP/$ASSET"
+CHECKSUM="$TMP/$SUM_ASSET"
+downloaded=0
+if [[ -n "$MIRROR_BASE" ]] && fetch_url "${MIRROR_BASE%/}/$TAG/$ASSET" "$PACKAGE"; then
+  echo "Downloaded package from configured release mirror."
+  downloaded=1
+elif [[ -n "${META[0]}" ]] && fetch_url "${META[0]}" "$PACKAGE"; then
+  downloaded=1
+elif [[ -n "${META[1]}" ]] && fetch_api_asset "${META[1]}" "$PACKAGE"; then
+  echo "Direct GitHub release asset was unavailable; GitHub API asset fallback succeeded."
+  downloaded=1
+fi
+[[ $downloaded -eq 1 ]] || { echo "Could not download release package"; exit 1; }
+
+EXPECTED_SHA=""
+if [[ -n "$MIRROR_BASE" ]] && fetch_url "${MIRROR_BASE%/}/$TAG/$SUM_ASSET" "$CHECKSUM"; then
+  EXPECTED_SHA="$(awk '{print $1}' "$CHECKSUM" | head -n1)"
+elif [[ -n "${META[3]}" ]] && fetch_url "${META[3]}" "$CHECKSUM"; then
+  EXPECTED_SHA="$(awk '{print $1}' "$CHECKSUM" | head -n1)"
+elif [[ -n "${META[4]}" ]] && fetch_api_asset "${META[4]}" "$CHECKSUM"; then
+  EXPECTED_SHA="$(awk '{print $1}' "$CHECKSUM" | head -n1)"
+elif [[ "${META[2]}" == sha256:* ]]; then
+  EXPECTED_SHA="${META[2]#sha256:}"
+  echo "Checksum asset unavailable; using trusted GitHub release metadata digest."
+fi
+ACTUAL_SHA="$(sha256sum "$PACKAGE" | awk '{print $1}')"
+[[ -n "$EXPECTED_SHA" && "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || { echo "Release SHA-256 verification failed"; exit 1; }
 
 mkdir "$TMP/extract"
-python3 - "$TMP/$ASSET" "$TMP/extract" <<'PY'
+python3 - "$PACKAGE" "$TMP/extract" <<'PY'
 import pathlib, sys, tarfile
 archive, dest = sys.argv[1:]
 root=pathlib.Path(dest).resolve()

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  echo "install-xray must run as root" >&2
+  exit 1
+fi
+
+if command -v xray >/dev/null 2>&1; then
+  echo "Xray already installed: $(command -v xray)"
+  exit 0
+fi
+
+command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v unzip >/dev/null 2>&1 || { echo "unzip is required" >&2; exit 1; }
+
+ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+case "$ARCH" in
+  amd64|x86_64) ASSET="Xray-linux-64.zip" ;;
+  arm64|aarch64) ASSET="Xray-linux-arm64-v8a.zip" ;;
+  *) echo "Unsupported Xray architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+API_BASE="${TORPANEL_GITHUB_API_BASE:-https://api.github.com}"
+PROXY_URL="${TORPANEL_DOWNLOAD_PROXY:-}"
+CUSTOM_URL="${TORPANEL_XRAY_URL:-}"
+CUSTOM_SHA="${TORPANEL_XRAY_SHA256:-}"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+curl_common=(--fail --location --silent --show-error --connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 --retry-all-errors)
+if [[ -n "$PROXY_URL" ]]; then
+  curl_common+=(--proxy "$PROXY_URL")
+fi
+
+download_url() {
+  local url="$1" out="$2"
+  curl "${curl_common[@]}" "$url" -o "$out"
+}
+
+download_api_asset() {
+  local url="$1" out="$2"
+  curl "${curl_common[@]}" \
+    -H 'Accept: application/octet-stream' \
+    -H 'User-Agent: TorLocationManager-XrayInstaller' \
+    "$url" -o "$out"
+}
+
+ZIP="$TMP/$ASSET"
+EXPECTED_SHA=""
+
+if [[ -n "$CUSTOM_URL" ]]; then
+  echo "Installing Xray from custom URL..."
+  download_url "$CUSTOM_URL" "$ZIP"
+  EXPECTED_SHA="$CUSTOM_SHA"
+else
+  JSON="$TMP/xray-release.json"
+  RELEASE_API="${API_BASE%/}/repos/XTLS/Xray-core/releases/latest"
+  echo "Resolving latest Xray release via GitHub API..."
+  download_url "$RELEASE_API" "$JSON" || {
+    echo "Could not reach the Xray GitHub API." >&2
+    echo "Either preinstall xray, configure TORPANEL_DOWNLOAD_PROXY, or set TORPANEL_XRAY_URL and TORPANEL_XRAY_SHA256." >&2
+    exit 1
+  }
+
+  readarray -t META < <(python3 - "$JSON" "$ASSET" <<'PY'
+import json, sys
+obj=json.load(open(sys.argv[1], encoding='utf-8'))
+name=sys.argv[2]
+for item in obj.get('assets', []):
+    if item.get('name') == name:
+        print(item.get('browser_download_url') or '')
+        print(item.get('url') or '')
+        print(item.get('digest') or '')
+        break
+else:
+    raise SystemExit(f'Xray release asset not found: {name}')
+PY
+  )
+  BROWSER_URL="${META[0]:-}"
+  API_URL="${META[1]:-}"
+  DIGEST="${META[2]:-}"
+  [[ "$DIGEST" == sha256:* ]] && EXPECTED_SHA="${DIGEST#sha256:}"
+
+  echo "Downloading $ASSET..."
+  if [[ -n "$BROWSER_URL" ]] && download_url "$BROWSER_URL" "$ZIP"; then
+    :
+  elif [[ -n "$API_URL" ]] && download_api_asset "$API_URL" "$ZIP"; then
+    echo "Direct GitHub asset URL was unavailable; downloaded through the GitHub API asset endpoint."
+  else
+    echo "Xray download failed through both official GitHub paths." >&2
+    echo "Configure TORPANEL_DOWNLOAD_PROXY or TORPANEL_XRAY_URL for restricted networks." >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$EXPECTED_SHA" ]]; then
+  ACTUAL_SHA="$(sha256sum "$ZIP" | awk '{print $1}')"
+  [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || {
+    echo "Xray SHA-256 mismatch" >&2
+    exit 1
+  }
+else
+  echo "Refusing an unverified custom Xray package; TORPANEL_XRAY_SHA256 is required." >&2
+  exit 1
+fi
+
+mkdir -p "$TMP/xray"
+unzip -q "$ZIP" -d "$TMP/xray"
+[[ -x "$TMP/xray/xray" || -f "$TMP/xray/xray" ]] || { echo "xray binary missing from archive" >&2; exit 1; }
+install -m 0755 "$TMP/xray/xray" /usr/local/bin/xray
+mkdir -p /usr/local/share/xray
+[[ -f "$TMP/xray/geoip.dat" ]] && install -m 0644 "$TMP/xray/geoip.dat" /usr/local/share/xray/geoip.dat
+[[ -f "$TMP/xray/geosite.dat" ]] && install -m 0644 "$TMP/xray/geosite.dat" /usr/local/share/xray/geosite.dat
+
+/usr/local/bin/xray version | head -n 1
+echo "Xray installation completed."

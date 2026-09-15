@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}خطا | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head"><div><div class="eyebrow">REQUEST ERROR</div><h1>عملیات انجام نشد</h1><p class="muted">{{ message }}</p></div></section>
+<section class="panel"><div class="actions"><a class="button" href="{{ request.referrer or url_for('dashboard') }}">بازگشت</a></div></section>
+{% endblock %}

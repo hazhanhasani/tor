@@ -21,7 +21,7 @@ jobs:
       - name: Compile
         run: python -m compileall -q torpanel
       - name: Shell syntax
-        run: bash -n install.sh bootstrap.sh scripts/tor-location-manager-update
+        run: bash -n install.sh bootstrap.sh scripts/tor-location-manager-update scripts/install-xray
       - name: Test
         env:
           TORPANEL_FERNET_KEY: RkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkY=

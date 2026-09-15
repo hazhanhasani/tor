@@ -1,11 +1,12 @@
 import base64
 import os
+from pathlib import Path
 
 from cryptography.fernet import Fernet
 
 os.environ.setdefault("TORPANEL_FERNET_KEY", Fernet.generate_key().decode())
 
-from torpanel.helper import gateway_config
+from torpanel.helper import gateway_config, validation_temp_path
 from torpanel.security import encrypt_secret
 
 
@@ -22,3 +23,10 @@ def test_gateway_blocks_udp_and_routes_tcp_to_tor():
     assert cfg["routing"]["rules"][0]["network"] == "udp"
     assert cfg["routing"]["rules"][0]["outboundTag"] == "blocked"
     assert cfg["routing"]["rules"][1]["outboundTag"] == "tor-de-test"
+
+
+def test_validation_temp_path_keeps_json_suffix():
+    path = Path("/etc/tor-location-manager/xray-gateway.json")
+    temp = validation_temp_path(path)
+    assert temp.name == "xray-gateway.new.json"
+    assert temp.suffix == ".json"

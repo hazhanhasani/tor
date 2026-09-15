@@ -99,6 +99,9 @@ fi
 if ! id torpanel >/dev/null 2>&1; then
   useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin torpanel
 fi
+if getent group systemd-journal >/dev/null 2>&1; then
+  usermod -a -G systemd-journal torpanel || true
+fi
 
 if ! command -v xray >/dev/null 2>&1; then
   echo "[2/8] Installing Xray-core through resilient official download paths..."

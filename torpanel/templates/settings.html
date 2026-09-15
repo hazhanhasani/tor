@@ -5,8 +5,8 @@
 <section class="panel">
   <form method="post" class="stack">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <label>آدرس کامل 3x-ui<input name="xui_base_url" value="{{ xui_base_url }}" placeholder="https://panel.example.com:2053/basepath" required><small>همان URL اصلی پنل، همراه با base path در صورت وجود.</small></label>
-    <label>API Token<input name="xui_api_token" type="password" placeholder="{{ 'ذخیره شده — برای تغییر مقدار جدید وارد کنید' if has_token else 'API Token' }}"><small>توکن با کلید محلی رمزگذاری می‌شود و در UI دوباره نمایش داده نمی‌شود.</small></label>
+    <label>آدرس کامل 3x-ui<input name="xui_base_url" value="{{ xui_base_url }}" placeholder="https://panel.example.com:2053/basepath" required><small>همان URL اصلی پنل، همراه با base path در صورت وجود. عبارت /panel/api را به انتهای آن اضافه نکنید.</small></label>
+    <label>API Token<input name="xui_api_token" type="password" placeholder="{{ 'ذخیره شده — برای تغییر مقدار جدید وارد کنید' if has_token else 'API Token' }}"><small>در 3x-ui از Settings → Security یک API Token فعال بسازید. مقدار خام توکن را وارد کنید؛ اگر Bearer را هم Paste کنید خودکار حذف می‌شود. توکن در این پنل رمزگذاری می‌شود و دوباره نمایش داده نمی‌شود.</small></label>
     <label>IP یا دامنه این Tor Gateway<input name="gateway_host" value="{{ gateway_host }}" placeholder="tor1.example.com یا 203.0.113.10" required><small>این آدرس باید از سرور 3x-ui قابل دسترس باشد.</small></label>
     <label>URL تست Outbound در 3x-ui<input name="xui_outbound_test_url" value="{{ xui_outbound_test_url }}"></label>
     <label class="check"><input type="checkbox" name="xui_verify_tls" {% if xui_verify_tls %}checked{% endif %}> بررسی معتبر بودن TLS پنل 3x-ui</label>
@@ -14,5 +14,6 @@
   </form>
   <form method="post" action="{{ url_for('settings_test') }}" class="test-form"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">تست اتصال و دریافت Inbounds</button></form>
 </section>
+<section class="note"><strong>راهنمای خطا:</strong> خطای 401 یعنی خود توکن توسط 3x-ui پذیرفته نشده است؛ خطای 403 یعنی توکن معتبر است ولی سطح دسترسی کافی ندارد؛ خطای 404 معمولاً به معنی URL یا base path اشتباه است.</section>
 <section class="note"><strong>نحوه Sync:</strong> تنظیمات فعلی Xray ابتدا از 3x-ui خوانده می‌شود؛ فقط Outboundها و Ruleهایی که Tag آن‌ها با <code>torloc-</code> شروع می‌شود مدیریت می‌شوند و بقیه تنظیمات موجود دست‌نخورده می‌مانند.</section>
 {% endblock %}

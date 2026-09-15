@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 CONFIG_DIR = Path("/etc/tor-location-node")
 STATE_DIR = Path("/var/lib/tor-location-node")
 AGENT_CONFIG = CONFIG_DIR / "agent.json"
@@ -145,10 +145,40 @@ def platform_asset() -> str:
     raise AgentError(f"Unsupported FRP architecture: {machine}")
 
 
-def _download(url: str, destination: Path, insecure: bool = False) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": f"TorLocationNode/{AGENT_VERSION}"})
-    with urllib.request.urlopen(req, timeout=180, context=ssl_context(insecure)) as resp, destination.open("wb") as out:
+def _download_opener(insecure: bool) -> urllib.request.OpenerDirector:
+    handlers: list[Any] = [urllib.request.HTTPSHandler(context=ssl_context(insecure))]
+    proxy = os.environ.get("TLM_DOWNLOAD_PROXY", "").strip()
+    if proxy:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    return urllib.request.build_opener(*handlers)
+
+
+def _download(
+    url: str,
+    destination: Path,
+    *,
+    insecure: bool = False,
+    headers: dict[str, str] | None = None,
+) -> None:
+    request_headers = {"User-Agent": f"TorLocationNode/{AGENT_VERSION}"}
+    request_headers.update(headers or {})
+    req = urllib.request.Request(url, headers=request_headers)
+    opener = _download_opener(insecure)
+    with opener.open(req, timeout=180) as resp, destination.open("wb") as out:
         shutil.copyfileobj(resp, out)
+
+
+def _download_json(url: str, insecure: bool = False) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": f"TorLocationNode/{AGENT_VERSION}"},
+    )
+    opener = _download_opener(insecure)
+    with opener.open(req, timeout=30) as resp:
+        data = json.load(resp)
+    if not isinstance(data, dict):
+        raise AgentError("FRP release metadata is invalid")
+    return data
 
 
 def install_frp(insecure: bool = False) -> None:
@@ -156,13 +186,12 @@ def install_frp(insecure: bool = False) -> None:
         return
     asset_suffix = platform_asset()
     api = os.environ.get("TLM_FRP_RELEASE_API", "https://api.github.com/repos/fatedier/frp/releases/latest")
-    req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json", "User-Agent": f"TorLocationNode/{AGENT_VERSION}"})
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl_context(insecure)) as resp:
-            release = json.load(resp)
+        release = _download_json(api, insecure=insecure)
     except Exception as exc:
         raise AgentError(
-            "FRP download metadata is unavailable. Preinstall frpc/frps or set TLM_FRP_RELEASE_API to an accessible mirror."
+            "FRP download metadata is unavailable. Preinstall frpc/frps, set TLM_DOWNLOAD_PROXY, "
+            "or set TLM_FRP_RELEASE_API to an accessible mirror."
         ) from exc
     assets = release.get("assets") if isinstance(release, dict) else []
     selected = None
@@ -177,14 +206,32 @@ def install_frp(insecure: bool = False) -> None:
     if not digest.startswith("sha256:"):
         raise AgentError("FRP release does not expose a trusted SHA-256 digest")
     expected = digest.split(":", 1)[1].lower()
-    url = str(selected.get("browser_download_url") or "")
-    if not url:
+    browser_url = str(selected.get("browser_download_url") or "")
+    api_asset_url = str(selected.get("url") or "")
+    if not browser_url and not api_asset_url:
         raise AgentError("FRP release asset URL is missing")
 
     with tempfile.TemporaryDirectory(prefix="tlm-frp-") as tmp_name:
         tmp = Path(tmp_name)
         archive = tmp / "frp.tar.gz"
-        _download(url, archive, insecure=insecure)
+        errors: list[str] = []
+        candidates = [
+            (browser_url, {}),
+            (api_asset_url, {"Accept": "application/octet-stream"}),
+        ]
+        downloaded = False
+        for url, headers in candidates:
+            if not url:
+                continue
+            try:
+                _download(url, archive, insecure=insecure, headers=headers)
+                downloaded = True
+                break
+            except Exception as exc:
+                errors.append(str(exc))
+                archive.unlink(missing_ok=True)
+        if not downloaded:
+            raise AgentError("FRP download failed through direct Release and GitHub API asset paths: " + " | ".join(errors[-2:]))
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         if actual != expected:
             raise AgentError("FRP SHA-256 verification failed")
@@ -232,7 +279,7 @@ def capabilities() -> dict[str, Any]:
         if not path:
             continue
         try:
-            out = run(path, "--version" if name.startswith("frp") else "--version", check=False).stdout.splitlines()
+            out = run(path, "--version", check=False).stdout.splitlines()
             values[f"{name}_version"] = out[0][:120] if out else "installed"
         except Exception:
             values[f"{name}_version"] = "installed"
@@ -482,11 +529,13 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
     current = str(item.get("transport") or "direct")
     last_probe = float(item.get("last_direct_probe") or 0)
     now = time.time()
+    health_timeout = max(5, min(int(link.get("health_timeout") or 45), 300))
 
     if current == "reverse":
         set_wg_endpoint(link, reverse)
         ok, rtt = peer_ping(str(link["peer_ip"]))
         if ok and now - last_probe < 180:
+            item.pop("direct_failure_since", None)
             return "reverse", rtt, "reverse-healthy"
         item["last_direct_probe"] = now
         set_wg_endpoint(link, direct)
@@ -494,6 +543,7 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
         direct_ok, direct_rtt = peer_ping(str(link["peer_ip"]))
         if direct_ok:
             item["transport"] = "direct"
+            item.pop("direct_failure_since", None)
             return "direct", direct_rtt, "direct-recovered"
         set_wg_endpoint(link, reverse)
         time.sleep(0.5)
@@ -505,12 +555,25 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
     ok, rtt = peer_ping(str(link["peer_ip"]))
     if ok:
         item["transport"] = "direct"
+        item.pop("direct_failure_since", None)
         return "direct", rtt, "direct-healthy"
+
+    failed_since = float(item.get("direct_failure_since") or now)
+    item.setdefault("direct_failure_since", now)
+    if now - failed_since < health_timeout:
+        item["transport"] = "direct"
+        return "down", None, f"direct-debounce-{int(now - failed_since)}s"
+
     set_wg_endpoint(link, reverse)
     time.sleep(0.8)
     ok, rtt = peer_ping(str(link["peer_ip"]))
-    item["transport"] = "reverse" if ok else "down"
-    return ("reverse" if ok else "down"), rtt, "direct-failed"
+    if ok:
+        item["transport"] = "reverse"
+        item.pop("direct_failure_since", None)
+        item["last_direct_probe"] = now
+        return "reverse", rtt, "direct-failed-failover-complete"
+    item["transport"] = "down"
+    return "down", rtt, "direct-and-reverse-failed"
 
 
 def apply_firewall(links: list[dict[str, Any]]) -> dict[str, Any]:

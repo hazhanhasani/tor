@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS locations (
     country_code TEXT NOT NULL,
     socks_port INTEGER NOT NULL UNIQUE,
     gateway_port INTEGER NOT NULL UNIQUE,
+    xui_inbound_port INTEGER NOT NULL DEFAULT 0,
     ss_method TEXT NOT NULL DEFAULT '2022-blake3-aes-128-gcm',
     ss_password TEXT NOT NULL,
     inbound_tags TEXT NOT NULL DEFAULT '[]',
@@ -32,6 +33,16 @@ CREATE TABLE IF NOT EXISTS locations (
 """
 
 
+def _migrate(db: sqlite3.Connection) -> None:
+    columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(locations)").fetchall()}
+    if "xui_inbound_port" not in columns:
+        db.execute("ALTER TABLE locations ADD COLUMN xui_inbound_port INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_xui_inbound_port "
+        "ON locations(xui_inbound_port) WHERE xui_inbound_port > 0"
+    )
+
+
 @contextmanager
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +50,7 @@ def connect():
     db.row_factory = sqlite3.Row
     try:
         db.executescript(SCHEMA)
+        _migrate(db)
         yield db
         db.commit()
     finally:
@@ -101,6 +113,7 @@ def _row_to_location(row: sqlite3.Row) -> dict[str, Any]:
     except Exception:
         obj["inbound_tags"] = []
     obj["enabled"] = bool(obj.get("enabled"))
+    obj["xui_inbound_port"] = int(obj.get("xui_inbound_port") or 0)
     return obj
 
 
@@ -115,16 +128,26 @@ def next_socks_port(start: int = 19050) -> int:
     return port
 
 
+def set_location_xui_inbound_port(location_id: int, port: int) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        db.execute(
+            "UPDATE locations SET xui_inbound_port=?, updated_at=? WHERE id=?",
+            (int(port), now, int(location_id)),
+        )
+
+
 def create_location(data: dict[str, Any]) -> int:
     now = datetime.now(timezone.utc).isoformat()
     with connect() as db:
         cur = db.execute(
             """INSERT INTO locations
-            (slug,name,country_code,socks_port,gateway_port,ss_method,ss_password,inbound_tags,enabled,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (slug,name,country_code,socks_port,gateway_port,xui_inbound_port,ss_method,ss_password,inbound_tags,enabled,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["slug"], data["name"], data["country_code"], int(data["socks_port"]),
-                int(data["gateway_port"]), data["ss_method"], data["ss_password"],
+                int(data["gateway_port"]), int(data.get("xui_inbound_port") or 0),
+                data["ss_method"], data["ss_password"],
                 json.dumps(data.get("inbound_tags", []), ensure_ascii=False),
                 1 if data.get("enabled", True) else 0, now, now,
             ),
@@ -137,11 +160,12 @@ def update_location(location_id: int, data: dict[str, Any]) -> None:
     with connect() as db:
         db.execute(
             """UPDATE locations SET
-            name=?, country_code=?, socks_port=?, gateway_port=?, ss_method=?,
+            name=?, country_code=?, socks_port=?, gateway_port=?, xui_inbound_port=?, ss_method=?,
             ss_password=?, inbound_tags=?, enabled=?, updated_at=? WHERE id=?""",
             (
                 data["name"], data["country_code"], int(data["socks_port"]),
-                int(data["gateway_port"]), data["ss_method"], data["ss_password"],
+                int(data["gateway_port"]), int(data.get("xui_inbound_port") or 0),
+                data["ss_method"], data["ss_password"],
                 json.dumps(data.get("inbound_tags", []), ensure_ascii=False),
                 1 if data.get("enabled", True) else 0, now, location_id,
             ),

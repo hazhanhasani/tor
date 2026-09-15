@@ -84,21 +84,48 @@ def make_app() -> Flask:
             gateway_host = request.form.get("gateway_host", "").strip()
             verify_tls = "1" if request.form.get("xui_verify_tls") == "on" else "0"
             test_url = request.form.get("xui_outbound_test_url", "https://www.google.com/generate_204").strip()
+            tor_transport_mode = request.form.get("tor_transport_mode", "direct").strip().lower()
+            tor_bridge_lines = request.form.get("tor_bridge_lines", "").strip()
             if base_url and not re.match(r"^https?://", base_url, re.I):
                 flash("آدرس 3x-ui باید با http:// یا https:// شروع شود.", "danger")
                 return redirect(url_for("settings"))
+            if tor_transport_mode not in {"direct", "obfs4"}:
+                flash("حالت اتصال Tor معتبر نیست.", "danger")
+                return redirect(url_for("settings"))
+            if tor_transport_mode == "obfs4":
+                bridge_rows = [x.strip() for x in tor_bridge_lines.splitlines() if x.strip() and not x.strip().startswith("#")]
+                if not bridge_rows:
+                    flash("برای حالت obfs4 حداقل یک Bridge لازم است.", "danger")
+                    return redirect(url_for("settings"))
+                for row in bridge_rows:
+                    normalized = row[7:].strip() if row.lower().startswith("bridge ") else row
+                    if not normalized.lower().startswith("obfs4 "):
+                        flash("همه Bridgeها باید از نوع obfs4 باشند.", "danger")
+                        return redirect(url_for("settings"))
             set_setting("xui_base_url", base_url.rstrip("/"))
             if token:
                 set_setting("xui_api_token", encrypt_secret(token))
             set_setting("gateway_host", gateway_host)
             set_setting("xui_verify_tls", verify_tls)
             set_setting("xui_outbound_test_url", test_url)
-            flash("تنظیمات ذخیره شد.", "success")
+            set_setting("tor_transport_mode", tor_transport_mode)
+            set_setting("tor_bridge_lines", tor_bridge_lines)
+            try:
+                apply_runtime()
+                flash("تنظیمات ذخیره و روی سرویس‌های Tor اعمال شد.", "success")
+            except Exception as exc:
+                flash(f"تنظیمات ذخیره شد، ولی اعمال تنظیمات Tor خطا داشت: {exc}", "warning")
             return redirect(url_for("settings"))
-        return render_template("settings.html", xui_base_url=get_setting("xui_base_url"), gateway_host=get_setting("gateway_host"),
-                               xui_verify_tls=get_setting("xui_verify_tls", "1") == "1",
-                               xui_outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
-                               has_token=bool(get_setting("xui_api_token")))
+        return render_template(
+            "settings.html",
+            xui_base_url=get_setting("xui_base_url"),
+            gateway_host=get_setting("gateway_host"),
+            xui_verify_tls=get_setting("xui_verify_tls", "1") == "1",
+            xui_outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
+            has_token=bool(get_setting("xui_api_token")),
+            tor_transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
+            tor_bridge_lines=get_setting("tor_bridge_lines", ""),
+        )
 
     @app.post("/settings/test")
     @login_required

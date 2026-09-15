@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌های Tor</h1><p>هر لوکیشن یک Tor مستقل، یک پورت Gateway رمزنگاری‌شده و Route اختصاصی در 3x-ui دارد.</p></div>
+  <div class="actions">
+    <a class="button primary" href="{{ url_for('location_new') }}">افزودن لوکیشن</a>
+    <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">Sync کامل</button></form>
+  </div>
+</section>
+{% if not configured %}<div class="alert warning">هنوز 3x-ui متصل نشده است. ابتدا از بخش «اتصال 3x-ui» آدرس پنل، API Token و IP/دامنه این Gateway را ثبت کنید.</div>{% endif %}
+<div class="grid">
+  {% for loc in locations %}
+  <article class="card">
+    <div class="card-head"><div><span class="country">{{ loc.country_code }}</span><h2>{{ loc.name }}</h2></div><span class="status {{ 'ok' if loc.active else 'off' }}">{{ 'فعال' if loc.active else 'متوقف' }}</span></div>
+    <dl>
+      <div><dt>Gateway Port</dt><dd>{{ loc.gateway_port }}</dd></div>
+      <div><dt>Tor SOCKS</dt><dd>127.0.0.1:{{ loc.socks_port }}</dd></div>
+      <div><dt>3x-ui Inbounds</dt><dd>{{ loc.inbound_tags|join(', ') if loc.inbound_tags else '—' }}</dd></div>
+      <div><dt>وضعیت</dt><dd>{{ 'Enabled' if loc.enabled else 'Disabled' }}</dd></div>
+    </dl>
+    <div class="card-actions">
+      <a class="button small" href="{{ url_for('location_edit', location_id=loc.id) }}">ویرایش</a>
+      <form method="post" action="{{ url_for('location_test', location_id=loc.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small" type="submit">تست IP خروجی</button></form>
+      <form method="post" action="{{ url_for('location_delete', location_id=loc.id) }}" onsubmit="return confirm('این لوکیشن حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small danger" type="submit">حذف</button></form>
+    </div>
+  </article>
+  {% else %}<div class="empty"><h2>هنوز لوکیشنی ساخته نشده است</h2><p>یک کشور و یک پورت Gateway انتخاب کنید و آن را به Inbound موردنظر 3x-ui متصل کنید.</p></div>{% endfor %}
+</div>
+{% endblock %}

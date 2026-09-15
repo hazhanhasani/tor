@@ -4,7 +4,7 @@ import copy
 import json
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 import urllib3
@@ -17,6 +17,14 @@ MANAGED_PREFIX = "torloc-"
 
 class XUIError(RuntimeError):
     pass
+
+
+def normalize_api_token(value: str) -> str:
+    """Accept either the raw token or a pasted `Bearer <token>` value."""
+    token = (value or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token
 
 
 @dataclass
@@ -32,7 +40,7 @@ def current_settings() -> XUISettings:
     token_enc = get_setting("xui_api_token")
     return XUISettings(
         base_url=get_setting("xui_base_url").rstrip("/") + "/",
-        api_token=decrypt_secret(token_enc) if token_enc else "",
+        api_token=normalize_api_token(decrypt_secret(token_enc) if token_enc else ""),
         gateway_host=get_setting("gateway_host"),
         verify_tls=get_setting("xui_verify_tls", "1") == "1",
         outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
@@ -42,34 +50,72 @@ def current_settings() -> XUISettings:
 class XUIClient:
     def __init__(self, settings: XUISettings):
         self.settings = settings
+        self.settings.api_token = normalize_api_token(self.settings.api_token)
         if not settings.verify_tls:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json",
-            "Authorization": f"Bearer {settings.api_token}",
-            "User-Agent": "TorLocationManager/1.0",
+            "Authorization": f"Bearer {self.settings.api_token}",
+            "User-Agent": "TorLocationManager/1.1",
         })
 
     def _url(self, path: str) -> str:
         return urljoin(self.settings.base_url, path.lstrip("/"))
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
+        url = self._url(path)
         try:
-            response = self.session.request(method, self._url(path), timeout=20,
-                                            verify=self.settings.verify_tls, **kwargs)
+            response = self.session.request(
+                method,
+                url,
+                timeout=20,
+                verify=self.settings.verify_tls,
+                allow_redirects=False,
+                **kwargs,
+            )
         except requests.RequestException as exc:
-            raise XUIError(f"3x-ui connection failed: {exc}") from exc
-        if response.status_code in (401, 403):
-            raise XUIError("3x-ui authentication failed. Check the API token.")
+            raise XUIError(f"اتصال به 3x-ui برقرار نشد: {exc}") from exc
+
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("Location", "")
+            raise XUIError(
+                f"3x-ui برای endpoint موردنظر Redirect برگرداند (HTTP {response.status_code}). "
+                f"آدرس کامل پنل و base path را بررسی کنید. مقصد: {location or 'نامشخص'}"
+            )
+        if response.status_code == 401:
+            raise XUIError(
+                "3x-ui توکن را نپذیرفت (HTTP 401). توکن ممکن است اشتباه، حذف‌شده، "
+                "غیرفعال یا منقضی باشد. در Settings → Security یک API Token جدید بسازید، "
+                "آن را فعال نگه دارید و فقط مقدار خود توکن را وارد کنید."
+            )
+        if response.status_code == 403:
+            detail = ""
+            try:
+                payload = response.json()
+                detail = str(payload.get("msg") or "") if isinstance(payload, dict) else ""
+            except ValueError:
+                pass
+            msg = (
+                "توکن معتبر است اما اجازه این عملیات را ندارد (HTTP 403). "
+                "برای Tor Location Manager باید API Token با scope=admin استفاده شود."
+            )
+            if detail:
+                msg += f" پیام 3x-ui: {detail}"
+            raise XUIError(msg)
+        if response.status_code == 404:
+            raise XUIError(
+                "Endpoint API پیدا نشد (HTTP 404). آدرس 3x-ui یا base path اشتباه است. "
+                f"مسیر بررسی‌شده: {urlparse(url).path}"
+            )
         if not response.ok:
-            raise XUIError(f"3x-ui returned HTTP {response.status_code}: {response.text[:300]}")
+            raise XUIError(f"3x-ui پاسخ HTTP {response.status_code} داد: {response.text[:300]}")
         try:
             payload = response.json()
         except ValueError as exc:
-            raise XUIError("3x-ui returned a non-JSON response") from exc
+            raise XUIError("3x-ui پاسخ غیر JSON برگرداند؛ URL/base path پنل را بررسی کنید.") from exc
         if isinstance(payload, dict) and payload.get("success") is False:
-            raise XUIError(str(payload.get("msg") or "3x-ui request failed"))
+            raise XUIError(str(payload.get("msg") or "درخواست 3x-ui ناموفق بود"))
         return payload
 
     @staticmethod
@@ -97,7 +143,7 @@ class XUIClient:
                     obj = obj[key]
                     break
         if not isinstance(obj, list):
-            raise XUIError("Unexpected response from /panel/api/inbounds/options")
+            raise XUIError("پاسخ /panel/api/inbounds/options ساختار مورد انتظار را ندارد.")
         result = []
         for item in obj:
             if not isinstance(item, dict) or not item.get("tag"):
@@ -131,7 +177,7 @@ class XUIClient:
                             config = json.loads(config)
                         if isinstance(config, dict):
                             return config
-        raise XUIError("Could not read the Xray configuration from 3x-ui")
+        raise XUIError("خواندن تنظیمات Xray از 3x-ui ممکن نشد.")
 
     def update_xray_config(self, config: dict[str, Any]) -> None:
         self._request("POST", "/panel/api/xray/update", data={
@@ -140,6 +186,8 @@ class XUIClient:
         })
 
     def test_connection(self) -> dict[str, Any]:
+        if not self.settings.api_token:
+            raise XUIError("API Token خالی است.")
         inbounds = self.list_inbounds()
         return {"inbound_count": len(inbounds), "inbounds": inbounds}
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tor-location-manager"
-version = "1.1.0"
+version = "1.1.1"
 description = "Multi-country Tor egress manager with automatic 3x-ui/Xray synchronization"
 requires-python = ">=3.10"
 dependencies = [

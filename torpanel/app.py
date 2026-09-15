@@ -11,7 +11,7 @@ from werkzeug.security import check_password_hash
 
 from .config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, FLASK_SECRET_KEY
 from .db import create_location, delete_location, get_location, get_setting, init_db, list_locations, next_socks_port, set_setting, update_location
-from .runtime import apply_runtime, service_active, test_exit
+from .runtime import apply_runtime, journal_tail, service_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings, normalize_api_token, sync_locations
@@ -38,7 +38,13 @@ def make_app() -> Flask:
 
     @app.context_processor
     def update_context():
-        return {"update_badge": bool(session.get("authenticated") and cached_update_available())}
+        authenticated = bool(session.get("authenticated"))
+        return {
+            "update_badge": bool(authenticated and cached_update_available()),
+            "ui_current_version": current_version(),
+            "ui_configured": bool(authenticated and get_setting("xui_base_url") and get_setting("xui_api_token")),
+            "ui_transport_mode": get_setting("tor_transport_mode", "direct") if authenticated else "direct",
+        }
 
     @app.get("/healthz")
     def healthz():
@@ -54,16 +60,43 @@ def make_app() -> Flask:
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password):
-            session.clear(); session["authenticated"] = True; csrf_token()
-            return redirect(url_for("index"))
+            session.clear()
+            session["authenticated"] = True
+            csrf_token()
+            return redirect(url_for("dashboard"))
         flash("نام کاربری یا رمز عبور نادرست است.", "danger")
         return redirect(url_for("login"))
 
     @app.post("/logout")
     @login_required
     def logout():
-        validate_csrf(request.form.get("_csrf")); session.clear()
+        validate_csrf(request.form.get("_csrf"))
+        session.clear()
         return redirect(url_for("login"))
+
+    @app.get("/dashboard")
+    @login_required
+    def dashboard():
+        locations = list_locations()
+        for loc in locations:
+            loc["active"] = service_active(loc["slug"])
+        active_count = sum(1 for loc in locations if loc["active"])
+        enabled_count = sum(1 for loc in locations if loc["enabled"])
+        configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
+        gateway_state = unit_state("tor-location-gateway.service")
+        update_info = update_state()
+        recent_locations = list(reversed(locations[-4:]))
+        return render_template(
+            "dashboard.html",
+            locations=locations,
+            recent_locations=recent_locations,
+            active_count=active_count,
+            enabled_count=enabled_count,
+            configured=configured,
+            gateway_state=gateway_state,
+            update_info=update_info,
+            transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
+        )
 
     @app.get("/")
     @login_required
@@ -72,7 +105,8 @@ def make_app() -> Flask:
         for loc in locations:
             loc["active"] = service_active(loc["slug"])
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
-        return render_template("index.html", locations=locations, configured=configured)
+        countries = sorted({str(loc["country_code"]).upper() for loc in locations})
+        return render_template("index.html", locations=locations, configured=configured, countries=countries)
 
     @app.route("/settings", methods=["GET", "POST"])
     @login_required
@@ -116,6 +150,8 @@ def make_app() -> Flask:
             except Exception as exc:
                 flash(f"تنظیمات ذخیره شد، ولی اعمال تنظیمات Tor خطا داشت: {exc}", "warning")
             return redirect(url_for("settings"))
+        bridge_lines = get_setting("tor_bridge_lines", "")
+        bridge_count = len([x for x in bridge_lines.splitlines() if x.strip() and not x.strip().startswith("#")])
         return render_template(
             "settings.html",
             xui_base_url=get_setting("xui_base_url"),
@@ -124,7 +160,8 @@ def make_app() -> Flask:
             xui_outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
             has_token=bool(get_setting("xui_api_token")),
             tor_transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
-            tor_bridge_lines=get_setting("tor_bridge_lines", ""),
+            tor_bridge_lines=bridge_lines,
+            bridge_count=bridge_count,
         )
 
     @app.post("/settings/test")
@@ -184,10 +221,36 @@ def make_app() -> Flask:
             if state.get("status") == "running":
                 raise RuntimeError("یک بروزرسانی دیگر در حال اجرا است.")
             trigger_update(tag)
-            flash("بروزرسانی در سرویس مستقل شروع شد. این صفحه ممکن است هنگام Restart چند لحظه در دسترس نباشد.", "success")
+            flash("بروزرسانی در سرویس مستقل شروع شد. پنل هنگام Restart ممکن است چند لحظه در دسترس نباشد.", "success")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("updates"))
+
+    @app.get("/logs")
+    @login_required
+    def logs():
+        locations = list_locations()
+        sources = [
+            {"key": "panel", "label": "Web Panel", "unit": "tor-location-panel.service"},
+            {"key": "gateway", "label": "Xray Gateway", "unit": "tor-location-gateway.service"},
+            {"key": "update", "label": "Updater", "unit": "tor-location-manager-update.service"},
+        ]
+        for loc in locations:
+            sources.append({"key": f"tor:{loc['slug']}", "label": f"Tor {loc['country_code']} · {loc['name']}", "unit": f"tor-location@{loc['slug']}.service"})
+        source_map = {item["key"]: item for item in sources}
+        selected = request.args.get("source", "panel")
+        if selected not in source_map:
+            selected = "panel"
+        selected_source = source_map[selected]
+        if selected == "update":
+            log_text = update_log_tail(180) or "هنوز لاگ بروزرسانی ثبت نشده است."
+        else:
+            log_text = journal_tail(selected_source["unit"], 160)
+        health = []
+        for item in sources:
+            state = unit_state(item["unit"])
+            health.append({**item, **state})
+        return render_template("logs.html", sources=sources, selected=selected, selected_source=selected_source, log_text=log_text, health=health)
 
     def available_inbounds():
         try:
@@ -249,10 +312,12 @@ def make_app() -> Flask:
                 name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form()
                 slug = f"{cc.lower()}-{secrets.token_hex(3)}"
                 password = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
-                create_location({"slug": slug, "name": name, "country_code": cc, "socks_port": next_socks_port(),
-                                 "gateway_port": gateway_port, "xui_inbound_port": xui_inbound_port,
-                                 "ss_method": "2022-blake3-aes-128-gcm",
-                                 "ss_password": encrypt_secret(password), "inbound_tags": inbound_tags, "enabled": enabled})
+                create_location({
+                    "slug": slug, "name": name, "country_code": cc, "socks_port": next_socks_port(),
+                    "gateway_port": gateway_port, "xui_inbound_port": xui_inbound_port,
+                    "ss_method": "2022-blake3-aes-128-gcm", "ss_password": encrypt_secret(password),
+                    "inbound_tags": inbound_tags, "enabled": enabled,
+                })
                 apply_runtime()
                 try:
                     stats = sync_locations(list_locations(), decrypt_secret)
@@ -278,9 +343,10 @@ def make_app() -> Flask:
             validate_csrf(request.form.get("_csrf"))
             try:
                 name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form(location_id)
-                update_location(location_id, {**location, "name": name, "country_code": cc, "gateway_port": gateway_port,
-                                              "xui_inbound_port": xui_inbound_port,
-                                              "inbound_tags": inbound_tags, "enabled": enabled})
+                update_location(location_id, {
+                    **location, "name": name, "country_code": cc, "gateway_port": gateway_port,
+                    "xui_inbound_port": xui_inbound_port, "inbound_tags": inbound_tags, "enabled": enabled,
+                })
                 apply_runtime()
                 try:
                     stats = sync_locations(list_locations(), decrypt_secret)
@@ -293,7 +359,8 @@ def make_app() -> Flask:
                     flash(f"لوکیشن ذخیره شد، ولی Sync ناموفق بود: {exc}", "warning")
                 return redirect(url_for("index"))
             except (ValueError, sqlite3.IntegrityError, RuntimeError) as exc:
-                flash(str(exc), "danger"); location = get_location(location_id)
+                flash(str(exc), "danger")
+                location = get_location(location_id)
         return render_template("location_form.html", location=location, inbounds=available_inbounds())
 
     @app.post("/locations/<int:location_id>/delete")
@@ -325,8 +392,10 @@ def make_app() -> Flask:
             return ("Not found", 404)
         try:
             result = test_exit(location)
-            actual = (result.get("country_code") or "?").upper(); expected = location["country_code"].upper()
-            ip = result.get("ip") or "?"; city = result.get("city") or ""
+            actual = (result.get("country_code") or "?").upper()
+            expected = location["country_code"].upper()
+            ip = result.get("ip") or "?"
+            city = result.get("city") or ""
             if actual == expected:
                 flash(f"خروجی Tor صحیح است: {actual} — {ip} {city}", "success")
             else:

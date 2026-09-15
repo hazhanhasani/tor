@@ -1,0 +1,20 @@
+[Unit]
+Description=Encrypted gateway for Tor Location Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=torpanel
+Group=torpanel
+ExecStart=/usr/local/bin/xray run -config /etc/tor-location-manager/xray-gateway.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/tor-location-manager/xray-gateway.json
+
+[Install]
+WantedBy=multi-user.target

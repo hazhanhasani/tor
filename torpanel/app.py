@@ -13,7 +13,7 @@ from .config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, FLASK_SECRET_KEY
 from .db import create_location, delete_location, get_location, get_setting, init_db, list_locations, next_socks_port, set_setting, update_location
 from .runtime import apply_runtime, service_active, test_exit
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
-from .update import current_version, latest_release, trigger_update, update_log_tail, update_state
+from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings, sync_locations
 
 
@@ -38,14 +38,7 @@ def make_app() -> Flask:
 
     @app.context_processor
     def update_context():
-        badge = False
-        if session.get("authenticated"):
-            try:
-                info = latest_release(force=False)
-                badge = bool(info.get("update_available") and info.get("package_ready"))
-            except Exception:
-                pass
-        return {"update_badge": badge}
+        return {"update_badge": bool(session.get("authenticated") and cached_update_available())}
 
     @app.get("/healthz")
     def healthz():

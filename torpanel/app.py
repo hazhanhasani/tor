@@ -13,6 +13,7 @@ from .config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, FLASK_SECRET_KEY
 from .db import create_location, delete_location, get_location, get_setting, init_db, list_locations, next_socks_port, set_setting, update_location
 from .runtime import apply_runtime, service_active, test_exit
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
+from .update import current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings, sync_locations
 
 
@@ -34,6 +35,21 @@ def make_app() -> Flask:
                 return redirect(url_for("login", next=request.path))
             return fn(*args, **kwargs)
         return wrapped
+
+    @app.context_processor
+    def update_context():
+        badge = False
+        if session.get("authenticated"):
+            try:
+                info = latest_release(force=False)
+                badge = bool(info.get("update_available") and info.get("package_ready"))
+            except Exception:
+                pass
+        return {"update_badge": badge}
+
+    @app.get("/healthz")
+    def healthz():
+        return {"status": "ok", "version": current_version()}
 
     @app.get("/login")
     def login():
@@ -104,6 +120,54 @@ def make_app() -> Flask:
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("settings"))
+
+    @app.get("/updates")
+    @login_required
+    def updates():
+        release = None
+        try:
+            release = latest_release(force=False)
+        except Exception as exc:
+            flash(f"بررسی Release ممکن نشد: {exc}", "warning")
+        return render_template(
+            "updates.html",
+            current_version=current_version(),
+            release=release,
+            state=update_state(),
+            log_tail=update_log_tail(),
+        )
+
+    @app.post("/updates/check")
+    @login_required
+    def updates_check():
+        validate_csrf(request.form.get("_csrf"))
+        try:
+            info = latest_release(force=True)
+            if info["update_available"]:
+                if info["package_ready"]:
+                    flash(f"نسخه جدید {info['tag']} آماده نصب است.", "success")
+                else:
+                    flash(f"نسخه {info['tag']} منتشر شده ولی Assets بروزرسانی کامل نیست.", "warning")
+            else:
+                flash("همین حالا آخرین نسخه نصب است.", "success")
+        except Exception as exc:
+            flash(str(exc), "danger")
+        return redirect(url_for("updates"))
+
+    @app.post("/updates/install")
+    @login_required
+    def updates_install():
+        validate_csrf(request.form.get("_csrf"))
+        tag = request.form.get("tag", "").strip()
+        try:
+            state = update_state()
+            if state.get("status") == "running":
+                raise RuntimeError("یک بروزرسانی دیگر در حال اجرا است.")
+            trigger_update(tag)
+            flash("بروزرسانی در سرویس مستقل شروع شد. این صفحه ممکن است هنگام Restart چند لحظه در دسترس نباشد.", "success")
+        except Exception as exc:
+            flash(str(exc), "danger")
+        return redirect(url_for("updates"))
 
     def available_inbounds():
         try:

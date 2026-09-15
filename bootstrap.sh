@@ -4,6 +4,14 @@ set -Eeuo pipefail
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "Run as root: curl ... | sudo bash"; exit 1
 fi
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "This bootstrap supports Debian/Ubuntu with apt."; exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 ca-certificates
+fi
+command -v curl >/dev/null 2>&1 || { apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates; }
 
 REPO="hazhanhasani/tor"
 TMP="$(mktemp -d)"
@@ -29,6 +37,19 @@ curl -fL --retry 3 "${META[2]}" -o "$TMP/$ASSET"
 curl -fL --retry 3 "${META[3]}" -o "$TMP/$ASSET.sha256"
 (cd "$TMP" && sha256sum -c "$ASSET.sha256")
 mkdir "$TMP/extract"
-tar -xzf "$TMP/$ASSET" -C "$TMP/extract"
+python3 - "$TMP/$ASSET" "$TMP/extract" <<'PY'
+import pathlib, sys, tarfile
+archive, dest=sys.argv[1:]
+root=pathlib.Path(dest).resolve()
+with tarfile.open(archive, 'r:gz') as tf:
+    for member in tf.getmembers():
+        target=(root/member.name).resolve()
+        if target != root and root not in target.parents:
+            raise SystemExit('unsafe archive path')
+        if member.issym() or member.islnk():
+            raise SystemExit('links are not allowed in installer archive')
+    tf.extractall(root)
+PY
 SRC="$(find "$TMP/extract" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+[[ -n "$SRC" && -f "$SRC/install.sh" ]] || { echo "Invalid release package"; exit 1; }
 exec bash "$SRC/install.sh"

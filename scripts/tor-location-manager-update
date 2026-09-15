@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ ${TORPANEL_UPDATE_CHILD:-0} != 1 ]]; then
+  self_copy="$(mktemp /tmp/tor-location-manager-update.XXXXXX)"
+  cp "$0" "$self_copy"
+  chmod 0700 "$self_copy"
+  exec env TORPANEL_UPDATE_CHILD=1 bash "$self_copy" "$@"
+fi
+
+REPO="hazhanhasani/tor"
+APP_DIR="/opt/tor-location-manager"
+ETC_DIR="/etc/tor-location-manager"
+DATA_DIR="/var/lib/tor-location-manager"
+STATE_FILE="$DATA_DIR/update-state.json"
+LOG_FILE="$DATA_DIR/update.log"
+BACKUP_ROOT="/var/backups/tor-location-manager"
+LOCK_FILE="/run/lock/tor-location-manager-update.lock"
+TAG="${1:-}"
+
+mkdir -p "$DATA_DIR" "$BACKUP_ROOT" "$(dirname "$LOCK_FILE")"
+touch "$LOG_FILE"
+chmod 0644 "$LOG_FILE"
+exec >>"$LOG_FILE" 2>&1
+
+write_state() {
+  local status="$1" message="${2:-}" backup="${3:-}"
+  python3 - "$STATE_FILE" "$status" "$TAG" "$message" "$backup" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+path, status, tag, message, backup = sys.argv[1:]
+payload = {"status": status, "target": tag, "message": message,
+           "updated_at": datetime.now(timezone.utc).isoformat()}
+if backup:
+    payload["backup_path"] = backup
+if os.path.exists(path):
+    try:
+        old = json.load(open(path, encoding="utf-8"))
+        payload.setdefault("started_at", old.get("started_at"))
+    except Exception:
+        pass
+if status == "running":
+    payload["started_at"] = payload["updated_at"]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+os.chmod(tmp, 0o644)
+os.replace(tmp, path)
+PY
+}
+
+fail() {
+  local rc=$?
+  write_state "failed" "Update failed (exit $rc). See update.log." "${BACKUP_DIR:-}"
+  exit "$rc"
+}
+trap fail ERR
+
+[[ $EUID -eq 0 ]] || { echo "Updater must run as root"; exit 1; }
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo "Another update is already running"; exit 1; }
+write_state "running" "Downloading and verifying release..."
+echo "=== Updating Tor Location Manager to $TAG ==="
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+JSON="$TMP/release.json"
+curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: TorLocationManager-Updater' "$API" -o "$JSON"
+ASSET="tor-location-manager-$TAG.tar.gz"
+SUM_ASSET="$ASSET.sha256"
+readarray -t URLS < <(python3 - "$JSON" "$ASSET" "$SUM_ASSET" <<'PY'
+import json, sys
+obj=json.load(open(sys.argv[1], encoding='utf-8'))
+assets={a.get('name'):a.get('browser_download_url') for a in obj.get('assets',[])}
+for name in sys.argv[2:]:
+    url=assets.get(name)
+    if not url: raise SystemExit(f'missing release asset: {name}')
+    print(url)
+PY
+)
+curl -fL --retry 3 "${URLS[0]}" -o "$TMP/$ASSET"
+curl -fL --retry 3 "${URLS[1]}" -o "$TMP/$SUM_ASSET"
+(
+  cd "$TMP"
+  sha256sum -c "$SUM_ASSET"
+)
+
+mkdir "$TMP/extract"
+python3 - "$TMP/$ASSET" "$TMP/extract" <<'PY'
+import pathlib, sys, tarfile
+archive, dest = sys.argv[1:]
+root=pathlib.Path(dest).resolve()
+with tarfile.open(archive, 'r:gz') as tf:
+    for member in tf.getmembers():
+        target=(root/member.name).resolve()
+        if target != root and root not in target.parents:
+            raise SystemExit('unsafe archive path')
+        if member.issym() or member.islnk():
+            raise SystemExit('links are not allowed in update archive')
+    tf.extractall(root)
+PY
+SRC="$(find "$TMP/extract" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+[[ -n "$SRC" && -f "$SRC/install.sh" && -f "$SRC/VERSION" ]] || { echo "Invalid release package"; exit 1; }
+[[ "v$(tr -d '[:space:]' < "$SRC/VERSION")" == "$TAG" ]] || { echo "VERSION does not match release tag"; exit 1; }
+
+CURRENT="0.0.0"
+[[ -f "$APP_DIR/VERSION" ]] && CURRENT="$(tr -d '[:space:]' < "$APP_DIR/VERSION")"
+python3 - "$CURRENT" "${TAG#v}" <<'PY'
+import sys
+def ver(v): return tuple(map(int, v.strip().lstrip('v').split('.')))
+if ver(sys.argv[2]) <= ver(sys.argv[1]):
+    raise SystemExit('target version is not newer than installed version')
+PY
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_DIR="$BACKUP_ROOT/$STAMP-$CURRENT"
+mkdir -p "$BACKUP_DIR"
+write_state "running" "Backup created; installing release..." "$BACKUP_DIR"
+[[ -d "$APP_DIR" ]] && rsync -a "$APP_DIR/" "$BACKUP_DIR/app/"
+[[ -f "$ETC_DIR/panel.env" ]] && cp -a "$ETC_DIR/panel.env" "$BACKUP_DIR/panel.env"
+[[ -f /etc/sudoers.d/tor-location-manager ]] && cp -a /etc/sudoers.d/tor-location-manager "$BACKUP_DIR/sudoers"
+for unit in tor-location-panel.service tor-location-gateway.service 'tor-location@.service'; do
+  [[ -f "/etc/systemd/system/$unit" ]] && cp -a "/etc/systemd/system/$unit" "$BACKUP_DIR/$unit"
+done
+[[ -f /usr/local/sbin/tor-location-manager-update ]] && cp -a /usr/local/sbin/tor-location-manager-update "$BACKUP_DIR/updater"
+if [[ -f "$DATA_DIR/panel.db" ]]; then
+  python3 - "$DATA_DIR/panel.db" "$BACKUP_DIR/panel.db" <<'PY'
+import sqlite3, sys
+src=sqlite3.connect(sys.argv[1]); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()
+PY
+fi
+
+rollback() {
+  echo "Health check failed; rolling back to $CURRENT"
+  systemctl stop tor-location-panel.service || true
+  rm -rf "$APP_DIR"
+  mkdir -p "$APP_DIR"
+  rsync -a "$BACKUP_DIR/app/" "$APP_DIR/"
+  [[ -f "$BACKUP_DIR/panel.env" ]] && cp -a "$BACKUP_DIR/panel.env" "$ETC_DIR/panel.env"
+  [[ -f "$BACKUP_DIR/sudoers" ]] && cp -a "$BACKUP_DIR/sudoers" /etc/sudoers.d/tor-location-manager
+  for unit in tor-location-panel.service tor-location-gateway.service 'tor-location@.service'; do
+    [[ -f "$BACKUP_DIR/$unit" ]] && cp -a "$BACKUP_DIR/$unit" "/etc/systemd/system/$unit"
+  done
+  [[ -f "$BACKUP_DIR/updater" ]] && cp -a "$BACKUP_DIR/updater" /usr/local/sbin/tor-location-manager-update
+  [[ -f "$BACKUP_DIR/panel.db" ]] && cp -a "$BACKUP_DIR/panel.db" "$DATA_DIR/panel.db"
+  systemctl daemon-reload
+  systemctl enable --now tor-location-panel.service || true
+  write_state "rolled_back" "Update failed health check and was rolled back to $CURRENT." "$BACKUP_DIR"
+  exit 1
+}
+
+systemctl stop tor-location-panel.service || true
+TORPANEL_UPGRADE=1 bash "$SRC/install.sh" --upgrade --non-interactive
+
+ok=0
+for _ in $(seq 1 20); do
+  if systemctl is-active --quiet tor-location-panel.service; then
+    PORT="$(awk -F= '$1=="TORPANEL_PORT"{print $2}' "$ETC_DIR/panel.env" | tail -1)"
+    PORT="${PORT:-8787}"
+    if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+  fi
+  sleep 1
+done
+[[ $ok -eq 1 ]] || rollback
+
+write_state "success" "Updated successfully from $CURRENT to ${TAG#v}." "$BACKUP_DIR"
+echo "Update successful: $CURRENT -> ${TAG#v}"
+find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR>5{$1=""; sub(/^ /,""); print}' | xargs -r rm -rf
+trap - ERR

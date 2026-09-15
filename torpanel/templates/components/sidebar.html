@@ -3,22 +3,22 @@
   <div class="sidebar-brand">
     <a href="{{ url_for('dashboard') }}" class="brand-lockup">
       <span class="brand-mark">T</span>
-      <span><strong>Tor Location</strong><small>3x-ui Multi-Exit Manager</small></span>
+      <span><strong>Tor Location</strong><small>Multi-Panel Exit & Tunnel</small></span>
     </a>
     <button class="icon-button sidebar-close" type="button" data-sidebar-close aria-label="بستن منو">{{ icon('x') }}</button>
   </div>
 
   <div class="sidebar-status">
-    <span class="health-dot {{ 'online' if ui_configured else 'warning' }}"></span>
-    <div><strong>{{ '3x-ui متصل شده' if ui_configured else 'نیاز به اتصال 3x-ui' }}</strong><small>Tor: {{ 'obfs4 Bridge' if ui_transport_mode == 'obfs4' else 'Direct' }}</small></div>
+    <span class="health-dot {{ 'online' if ui_configured or ui_pasarguard_configured else 'warning' }}"></span>
+    <div><strong>{% if ui_configured and ui_pasarguard_configured %}3x-ui + PasarGuard{% elif ui_configured %}3x-ui متصل{% elif ui_pasarguard_configured %}PasarGuard متصل{% else %}نیاز به اتصال پنل{% endif %}</strong><small>Tor: {{ 'obfs4 Bridge' if ui_transport_mode == 'obfs4' else 'Direct' }}</small></div>
   </div>
 
   <nav class="sidebar-nav">
     <div class="nav-section-label">مدیریت</div>
     <a class="nav-item {{ 'active' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">{{ icon('dashboard') }}<span>داشبورد</span></a>
-    <a class="nav-item {{ 'active' if request.endpoint in ['index','location_new','location_edit'] else '' }}" href="{{ url_for('index') }}">{{ icon('globe') }}<span>لوکیشن‌ها</span></a>
+    <a class="nav-item {{ 'active' if request.endpoint in ['index','location_new','location_edit'] else '' }}" href="{{ url_for('index') }}">{{ icon('globe') }}<span>لوکیشن‌های Tor</span></a>
     <a class="nav-item {{ 'active' if request.blueprint == 'tunnels' else '' }}" href="{{ url_for('tunnels.tunnel_index') }}">{{ icon('route') }}<span>تانل ترکیبی</span></a>
-    <a class="nav-item {{ 'active' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">{{ icon('link') }}<span>اتصال و شبکه</span></a>
+    <a class="nav-item {{ 'active' if request.endpoint and request.endpoint.startswith('settings') else '' }}" href="{{ url_for('settings') }}">{{ icon('link') }}<span>پنل‌ها و شبکه</span></a>
 
     <div class="nav-section-label">سیستم</div>
     <a class="nav-item {{ 'active' if request.endpoint and request.endpoint.startswith('updates') else '' }}" href="{{ url_for('updates') }}">{{ icon('update') }}<span>بروزرسانی</span>{% if update_badge %}<span class="nav-pill">جدید</span>{% endif %}</a>

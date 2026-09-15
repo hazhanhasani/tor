@@ -77,18 +77,37 @@ fi
 
 echo "[3/7] Installing application v$VERSION..."
 rsync -a --delete \
-  --exclude '.git' --exclude 'venv' --exclude '.venv-new' --exclude '.venv-old' \
+  --exclude '.git' --exclude 'venv' --exclude '.venv-old' \
   --exclude '__pycache__' --exclude '*.pyc' \
   "$SRC_DIR/" "$APP_DIR/"
 
-NEW_VENV="$APP_DIR/.venv-new"
+VENV_DIR="$APP_DIR/venv"
 OLD_VENV="$APP_DIR/.venv-old"
-rm -rf "$NEW_VENV" "$OLD_VENV"
-python3 -m venv "$NEW_VENV"
-"$NEW_VENV/bin/pip" install --disable-pip-version-check --upgrade pip wheel
-"$NEW_VENV/bin/pip" install --disable-pip-version-check "$APP_DIR"
-if [[ -d "$APP_DIR/venv" ]]; then mv "$APP_DIR/venv" "$OLD_VENV"; fi
-mv "$NEW_VENV" "$APP_DIR/venv"
+rm -rf "$OLD_VENV"
+if [[ -d "$VENV_DIR" ]]; then
+  mv "$VENV_DIR" "$OLD_VENV"
+fi
+restore_old_venv() {
+  rm -rf "$VENV_DIR"
+  if [[ -d "$OLD_VENV" ]]; then
+    mv "$OLD_VENV" "$VENV_DIR"
+  fi
+}
+if ! python3 -m venv "$VENV_DIR"; then
+  restore_old_venv
+  echo "Failed to create Python virtual environment."
+  exit 1
+fi
+if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip wheel; then
+  restore_old_venv
+  echo "Failed to prepare Python virtual environment."
+  exit 1
+fi
+if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check "$APP_DIR"; then
+  restore_old_venv
+  echo "Failed to install application dependencies."
+  exit 1
+fi
 rm -rf "$OLD_VENV"
 
 install -m 0755 "$APP_DIR/scripts/tor-location-manager-update" /usr/local/sbin/tor-location-manager-update
@@ -181,7 +200,8 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 if [[ $HEALTHY -ne 1 ]]; then
-  systemctl status tor-location-panel.service --no-pager || true
+  systemctl status tor-location-panel.service --no-pager -l || true
+  journalctl -u tor-location-panel.service -n 80 --no-pager || true
   echo "Panel health check failed."
   exit 1
 fi

@@ -145,7 +145,10 @@ rollback() {
     [[ -f "$BACKUP_DIR/$unit" ]] && cp -a "$BACKUP_DIR/$unit" "/etc/systemd/system/$unit"
   done
   [[ -f "$BACKUP_DIR/updater" ]] && cp -a "$BACKUP_DIR/updater" /usr/local/sbin/tor-location-manager-update
-  [[ -f "$BACKUP_DIR/panel.db" ]] && cp -a "$BACKUP_DIR/panel.db" "$DATA_DIR/panel.db"
+  if [[ -f "$BACKUP_DIR/panel.db" ]]; then
+    cp -a "$BACKUP_DIR/panel.db" "$DATA_DIR/panel.db"
+    chown torpanel:torpanel "$DATA_DIR/panel.db"
+  fi
   systemctl daemon-reload
   systemctl enable --now tor-location-panel.service || true
   write_state "rolled_back" "Update failed health check and was rolled back to $CURRENT." "$BACKUP_DIR"

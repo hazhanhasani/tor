@@ -167,7 +167,7 @@ def make_app() -> Flask:
             cfg = current_settings()
             if not cfg.base_url.strip("/") or not cfg.api_token:
                 return []
-            return XUIClient(cfg).list_inbounds()
+            return [x for x in XUIClient(cfg).list_inbounds() if not str(x.get("tag") or "").startswith("torloc-in-")]
         except Exception as exc:
             flash(f"خواندن ورودی‌های 3x-ui ممکن نشد: {exc}", "warning")
             return []
@@ -176,6 +176,7 @@ def make_app() -> Flask:
         name = request.form.get("name", "").strip()
         country_code = request.form.get("country_code", "").strip().upper()
         gateway_port_raw = request.form.get("gateway_port", "").strip()
+        xui_inbound_port_raw = request.form.get("xui_inbound_port", "").strip()
         inbound_tags = [x for x in request.form.getlist("inbound_tags") if x]
         enabled = request.form.get("enabled") == "on"
         if not name:
@@ -188,15 +189,29 @@ def make_app() -> Flask:
             raise ValueError("پورت Gateway معتبر نیست.")
         if not 1024 <= gateway_port <= 65535:
             raise ValueError("پورت Gateway باید بین 1024 و 65535 باشد.")
+        if xui_inbound_port_raw:
+            try:
+                xui_inbound_port = int(xui_inbound_port_raw)
+            except ValueError:
+                raise ValueError("پورت Inbound در 3x-ui معتبر نیست.")
+            if not 1024 <= xui_inbound_port <= 65535:
+                raise ValueError("پورت Inbound در 3x-ui باید بین 1024 و 65535 باشد.")
+            if xui_inbound_port == gateway_port:
+                raise ValueError("پورت Inbound 3x-ui و پورت Tor Gateway باید متفاوت باشند.")
+        else:
+            xui_inbound_port = 0
+
         for loc in list_locations():
             if existing_id and loc["id"] == existing_id:
                 continue
             if loc["gateway_port"] == gateway_port:
                 raise ValueError("این پورت Gateway قبلاً استفاده شده است.")
+            if xui_inbound_port and int(loc.get("xui_inbound_port") or 0) == xui_inbound_port:
+                raise ValueError("این پورت Inbound قبلاً برای لوکیشن دیگری استفاده شده است.")
             overlap = set(loc["inbound_tags"]) & set(inbound_tags)
             if overlap:
-                raise ValueError("یک ورودی 3x-ui نمی‌تواند هم‌زمان به دو لوکیشن Tor متصل باشد: " + ", ".join(sorted(overlap)))
-        return name, country_code, gateway_port, inbound_tags, enabled
+                raise ValueError("یک ورودی دستی 3x-ui نمی‌تواند هم‌زمان به دو لوکیشن Tor متصل باشد: " + ", ".join(sorted(overlap)))
+        return name, country_code, gateway_port, xui_inbound_port, inbound_tags, enabled
 
     @app.route("/locations/new", methods=["GET", "POST"])
     @login_required
@@ -204,16 +219,21 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, inbound_tags, enabled = validate_location_form()
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form()
                 slug = f"{cc.lower()}-{secrets.token_hex(3)}"
                 password = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
                 create_location({"slug": slug, "name": name, "country_code": cc, "socks_port": next_socks_port(),
-                                 "gateway_port": gateway_port, "ss_method": "2022-blake3-aes-128-gcm",
+                                 "gateway_port": gateway_port, "xui_inbound_port": xui_inbound_port,
+                                 "ss_method": "2022-blake3-aes-128-gcm",
                                  "ss_password": encrypt_secret(password), "inbound_tags": inbound_tags, "enabled": enabled})
                 apply_runtime()
                 try:
-                    sync_locations(list_locations(enabled_only=True), decrypt_secret)
-                    flash("لوکیشن ساخته شد و 3x-ui همگام‌سازی شد.", "success")
+                    stats = sync_locations(list_locations(), decrypt_secret)
+                    flash(
+                        f"لوکیشن ساخته شد؛ Inbound اختصاصی 3x-ui و Outbound/Route همگام شدند "
+                        f"(ساخته‌شده: {stats['created']}، بروزشده: {stats['updated']}).",
+                        "success",
+                    )
                 except Exception as exc:
                     flash(f"لوکیشن ساخته شد، ولی Sync با 3x-ui ناموفق بود: {exc}", "warning")
                 return redirect(url_for("index"))
@@ -230,13 +250,18 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, inbound_tags, enabled = validate_location_form(location_id)
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form(location_id)
                 update_location(location_id, {**location, "name": name, "country_code": cc, "gateway_port": gateway_port,
+                                              "xui_inbound_port": xui_inbound_port,
                                               "inbound_tags": inbound_tags, "enabled": enabled})
                 apply_runtime()
                 try:
-                    sync_locations(list_locations(enabled_only=True), decrypt_secret)
-                    flash("لوکیشن و تنظیمات 3x-ui به‌روزرسانی شد.", "success")
+                    stats = sync_locations(list_locations(), decrypt_secret)
+                    flash(
+                        f"لوکیشن به‌روزرسانی شد؛ Inbound/Outbound 3x-ui نیز Reconcile شد "
+                        f"(ساخته‌شده: {stats['created']}، بروزشده: {stats['updated']}، حذف‌شده: {stats['removed']}).",
+                        "success",
+                    )
                 except Exception as exc:
                     flash(f"لوکیشن ذخیره شد، ولی Sync ناموفق بود: {exc}", "warning")
                 return redirect(url_for("index"))
@@ -253,8 +278,13 @@ def make_app() -> Flask:
             return ("Not found", 404)
         delete_location(location_id)
         try:
-            apply_runtime(); sync_locations(list_locations(enabled_only=True), decrypt_secret)
-            flash("لوکیشن حذف شد و Route آن از 3x-ui پاک شد.", "success")
+            apply_runtime()
+            stats = sync_locations(list_locations(), decrypt_secret)
+            flash(
+                f"لوکیشن حذف شد و Inbound/Outbound/Route مدیریت‌شده از 3x-ui پاک شد "
+                f"(حذف‌شده: {stats['removed']}).",
+                "success",
+            )
         except Exception as exc:
             flash(f"لوکیشن حذف شد، ولی اعمال نهایی خطا داشت: {exc}", "warning")
         return redirect(url_for("index"))
@@ -283,8 +313,12 @@ def make_app() -> Flask:
     def sync():
         validate_csrf(request.form.get("_csrf"))
         try:
-            apply_runtime(); sync_locations(list_locations(enabled_only=True), decrypt_secret)
-            flash("Tor و 3x-ui با موفقیت همگام‌سازی شدند.", "success")
+            apply_runtime()
+            stats = sync_locations(list_locations(), decrypt_secret)
+            flash(
+                f"Tor و 3x-ui با موفقیت Reconcile شدند. Inbound: +{stats['created']} / ~{stats['updated']} / -{stats['removed']}.",
+                "success",
+            )
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("index"))

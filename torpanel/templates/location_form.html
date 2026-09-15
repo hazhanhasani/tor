@@ -1,24 +1,84 @@
 {% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
 {% block title %}{{ 'ویرایش' if location else 'افزودن' }} لوکیشن | Tor Location Manager{% endblock %}
 {% block content %}
-<section class="page-head"><div><div class="eyebrow">TOR INSTANCE + 3X-UI ROUTE</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p class="muted">برای هر کشور یک Tor مستقل، یک Inbound اختصاصی در 3x-ui و یک Outbound/Route اختصاصی ساخته می‌شود.</p></div></section>
-<section class="panel"><form method="post" class="stack">
+<section class="page-head">
+  <div><div class="eyebrow">LOCATION WIZARD</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p>کشور، پورت‌ها و Routeهای 3x-ui را مرحله‌به‌مرحله تنظیم کنید.</p></div>
+  <a class="button" href="{{ url_for('index') }}">بازگشت به لوکیشن‌ها</a>
+</section>
+
+<form method="post" data-wizard>
   <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-  <div class="two">
-    <label>نام نمایشی<input name="name" value="{{ location.name if location else '' }}" placeholder="Germany" required></label>
-    <label>کد دوحرفی کشور<input name="country_code" value="{{ location.country_code if location else '' }}" placeholder="DE" maxlength="2" required></label>
+  <div class="wizard">
+    <aside class="wizard-rail" aria-label="مراحل ساخت لوکیشن">
+      <button type="button" class="wizard-step active" data-wizard-step><span class="step-dot">1</span><span>اطلاعات پایه</span></button>
+      <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">2</span><span>پورت و مسیر</span></button>
+      <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">3</span><span>Inboundهای اضافی</span></button>
+      <button type="button" class="wizard-step" data-wizard-step><span class="step-dot">4</span><span>مرور و ذخیره</span></button>
+    </aside>
+
+    <div class="stack">
+      <section class="wizard-panel active" data-wizard-panel>
+        <div class="form-section">
+          <div class="form-section-title"><span class="form-section-number">01</span><div><h3>هویت لوکیشن</h3><p>نامی که در پنل می‌بینید و کشور خروجی Tor.</p></div></div>
+          <div class="two">
+            <label class="field"><span>نام نمایشی</span><input name="name" value="{{ location.name if location else '' }}" placeholder="مثلاً Germany" autocomplete="off" required><small>یک نام کوتاه و قابل تشخیص انتخاب کنید.</small></label>
+            <label class="field"><span>کد دوحرفی کشور</span><input name="country_code" value="{{ location.country_code if location else '' }}" placeholder="DE" maxlength="2" pattern="[A-Za-z]{2}" autocomplete="off" required><small>ISO Alpha-2؛ مثل DE، NL، FR یا US.</small></label>
+          </div>
+          <div class="callout info" style="margin-top:14px"><strong>Tor Exit Policy:</strong> این کشور با <code>ExitNodes</code> و <code>StrictNodes 1</code> اعمال می‌شود؛ اگر Exit مناسب موجود نباشد به کشور دیگری fallback نمی‌شود.</div>
+        </div>
+        <div class="wizard-nav"><span></span><button class="button primary" type="button" data-wizard-next>مرحله بعد {{ icon('chevron') }}</button></div>
+      </section>
+
+      <section class="wizard-panel" data-wizard-panel>
+        <div class="form-section">
+          <div class="form-section-title"><span class="form-section-number">02</span><div><h3>پورت‌ها و مسیر اختصاصی</h3><p>Inbound سمت 3x-ui و Gateway سمت Tor باید پورت متفاوت داشته باشند.</p></div></div>
+          <div class="two">
+            <label class="field"><span>پورت Inbound در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>اگر خالی باشد پروژه از محدوده آزاد یک پورت مناسب انتخاب می‌کند.</small></label>
+            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت SS2022 بین 3x-ui و Gateway. از بیرون فقط IP سرور 3x-ui باید به آن دسترسی داشته باشد.</small></label>
+          </div>
+          <div class="location-route" style="margin-bottom:0">
+            <div class="route-node"><b>3x-ui</b><span>Inbound اختصاصی</span></div><span class="route-arrow">→</span>
+            <div class="route-node"><b>SS2022</b><span>Gateway رمزنگاری‌شده</span></div><span class="route-arrow">→</span>
+            <div class="route-node"><b>Tor Exit</b><span>کشور انتخابی</span></div>
+          </div>
+        </div>
+        <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="button" data-wizard-next>مرحله بعد {{ icon('chevron') }}</button></div>
+      </section>
+
+      <section class="wizard-panel" data-wizard-panel>
+        <div class="form-section">
+          <div class="form-section-title"><span class="form-section-number">03</span><div><h3>Inboundهای دستی اضافی</h3><p>اختیاری؛ علاوه بر Inbound اختصاصی، ورودی‌های فعلی را هم می‌توانید از همین کشور خارج کنید.</p></div></div>
+          {% if inbounds %}
+          <div class="checks">
+            {% for item in inbounds %}
+            <label class="check row"><input type="checkbox" name="inbound_tags" value="{{ item.tag }}" {% if location and item.tag in location.inbound_tags %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }} · port {{ item.port }} · {{ item.tag }}</small></span></label>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty-state" style="padding:28px 18px;box-shadow:none"><div class="empty-illustration" style="width:54px;height:54px">{{ icon('route') }}</div><h2>Inbound دستی دیگری نیست</h2><p>اشکالی ندارد؛ Inbound اختصاصی این لوکیشن همیشه خودکار ساخته می‌شود.</p></div>
+          {% endif %}
+          <label class="check check-card" style="margin-top:14px"><input type="checkbox" name="enabled" {% if not location or location.enabled %}checked{% endif %}><span><b>لوکیشن فعال باشد</b><small>در حالت غیرفعال، Tor و Route مدیریت‌شده برای این لوکیشن اجرا نمی‌شوند.</small></span></label>
+        </div>
+        <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="button" data-wizard-next>مرور نهایی {{ icon('chevron') }}</button></div>
+      </section>
+
+      <section class="wizard-panel" data-wizard-panel>
+        <div class="form-section">
+          <div class="form-section-title"><span class="form-section-number">04</span><div><h3>مرور نهایی</h3><p>قبل از اعمال تغییرات، خلاصه تنظیمات را بررسی کنید.</p></div></div>
+          <div class="review-list">
+            <div class="review-row"><span>نام لوکیشن</span><strong data-review-name>—</strong></div>
+            <div class="review-row"><span>کشور خروجی</span><strong data-review-country>—</strong></div>
+            <div class="review-row"><span>پورت Inbound 3x-ui</span><strong data-review-inbound>خودکار</strong></div>
+            <div class="review-row"><span>پورت Gateway</span><strong data-review-gateway>—</strong></div>
+            <div class="review-row"><span>Inboundهای اضافی</span><strong data-review-extra>بدون ورودی اضافی</strong></div>
+            <div class="review-row"><span>وضعیت</span><strong data-review-state>فعال</strong></div>
+          </div>
+          <div class="callout" style="margin-top:14px"><strong>پس از ذخیره:</strong> Tor instance، Inbound اختصاصی Shadowsocks 2022، Outbound و Routing Rule مدیریت‌شده ساخته یا Reconcile می‌شوند. تنظیمات دستی غیرمرتبط 3x-ui دست‌نخورده می‌مانند.</div>
+        </div>
+        <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="submit">{{ icon('check') }} {{ 'ذخیره تغییرات' if location else 'ساخت و اعمال لوکیشن' }}</button></div>
+      </section>
+    </div>
   </div>
-  <div class="two">
-    <label>پورت Inbound در 3x-ui<input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>این همان پورتی است که برای این لوکیشن داخل 3x-ui ساخته می‌شود. اگر خالی باشد یک پورت آزاد به‌صورت خودکار انتخاب می‌شود.</small></label>
-    <label>پورت Tor Gateway<input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت ارتباط رمزنگاری‌شده بین 3x-ui و این Tor Gateway است و باید با پورت Inbound متفاوت باشد.</small></label>
-  </div>
-  <div class="note"><strong>ساخت خودکار:</strong> برای این لوکیشن یک Inbound از نوع Shadowsocks 2022 با Tag مدیریت‌شده <code>torloc-in-...</code> ساخته می‌شود، یک Outbound اختصاصی به Tor Gateway ایجاد می‌شود و Routing بین آن‌ها خودکار اعمال خواهد شد.</div>
-  <fieldset><legend>Inboundهای موجود اضافی که باید از همین کشور خارج شوند</legend>
-  <p class="muted">اختیاری است. Inbound اختصاصی بالا همیشه خودکار ساخته می‌شود؛ این بخش فقط برای Route کردن Inboundهای موجود شما به همان خروجی Tor است.</p>
-  {% if inbounds %}<div class="checks">{% for item in inbounds %}
-    <label class="check row"><input type="checkbox" name="inbound_tags" value="{{ item.tag }}" {% if location and item.tag in location.inbound_tags %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }} · port {{ item.port }} · {{ item.tag }}</small></span></label>
-  {% endfor %}</div>{% else %}<p class="muted">Inbound دستی دیگری دریافت نشد؛ مشکلی نیست، Inbound اختصاصی این لوکیشن خودکار ساخته می‌شود.</p>{% endif %}</fieldset>
-  <label class="check"><input type="checkbox" name="enabled" {% if not location or location.enabled %}checked{% endif %}> لوکیشن فعال باشد</label>
-  <div class="actions"><button class="button primary" type="submit">ذخیره و ساخت Inbound/Outbound</button><a class="button" href="{{ url_for('index') }}">انصراف</a></div>
-</form></section>
+</form>
 {% endblock %}

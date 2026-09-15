@@ -9,6 +9,7 @@
   <title>{% block title %}Tor Location Manager{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app-fixes.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='tunnels.css') }}">
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
 <body class="{{ 'app-authenticated' if session.get('authenticated') else 'auth-page' }}">

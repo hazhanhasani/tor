@@ -46,28 +46,63 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
+APT_PROXY="${TORPANEL_APT_PROXY:-}"
+DOWNLOAD_PROXY="${TORPANEL_DOWNLOAD_PROXY:-}"
+PIP_INDEX_URL_CUSTOM="${TORPANEL_PIP_INDEX_URL:-}"
+GITHUB_API_BASE="${TORPANEL_GITHUB_API_BASE:-https://api.github.com}"
+RELEASE_MIRROR_BASE="${TORPANEL_RELEASE_MIRROR_BASE:-}"
+
+apt_args=(-o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+if [[ -n "$APT_PROXY" ]]; then
+  apt_args+=( -o "Acquire::http::Proxy=$APT_PROXY" -o "Acquire::https::Proxy=$APT_PROXY" )
+fi
+
+apt_update() {
+  apt-get "${apt_args[@]}" update
+}
+
+apt_install() {
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" install -y "$@"
+}
+
+pip_args=(--disable-pip-version-check --retries 5 --timeout 30)
+if [[ -n "$PIP_INDEX_URL_CUSTOM" ]]; then
+  pip_args+=(--index-url "$PIP_INDEX_URL_CUSTOM")
+fi
+if [[ -n "$DOWNLOAD_PROXY" ]]; then
+  pip_args+=(--proxy "$DOWNLOAD_PROXY")
+fi
+
 EXISTING=0
 [[ -f "$ENV_FILE" ]] && EXISTING=1
 if [[ $EXISTING -eq 1 ]]; then
   echo "Existing installation detected; persistent configuration will be preserved."
 fi
 
-echo "[1/7] Installing system dependencies..."
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y tor python3 python3-venv python3-pip curl ca-certificates unzip openssl sudo rsync util-linux
+echo "[1/8] Installing system dependencies with retry-safe APT settings..."
+apt_update
+apt_install tor python3 python3-venv python3-pip curl ca-certificates unzip openssl sudo rsync util-linux
+if apt-cache show obfs4proxy >/dev/null 2>&1; then
+  apt_install obfs4proxy
+else
+  echo "Warning: obfs4proxy is not available from the configured APT repositories."
+  echo "Direct Tor mode will work; bridge mode requires obfs4proxy to be installed later."
+fi
 
 if ! id torpanel >/dev/null 2>&1; then
   useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin torpanel
 fi
 
 if ! command -v xray >/dev/null 2>&1; then
-  echo "[2/7] Installing Xray-core..."
-  tmp="$(mktemp)"
-  curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh -o "$tmp"
-  bash "$tmp" install
-  rm -f "$tmp"
+  echo "[2/8] Installing Xray-core through resilient official download paths..."
+  chmod +x "$SRC_DIR/scripts/install-xray"
+  TORPANEL_GITHUB_API_BASE="$GITHUB_API_BASE" \
+  TORPANEL_DOWNLOAD_PROXY="$DOWNLOAD_PROXY" \
+  TORPANEL_XRAY_URL="${TORPANEL_XRAY_URL:-}" \
+  TORPANEL_XRAY_SHA256="${TORPANEL_XRAY_SHA256:-}" \
+    bash "$SRC_DIR/scripts/install-xray"
 else
-  echo "[2/7] Xray-core already installed."
+  echo "[2/8] Xray-core already installed: $(command -v xray)"
 fi
 
 mkdir -p "$APP_DIR" "$ETC_DIR/instances" "$DATA_DIR/tor" "$BACKUP_DIR"
@@ -75,7 +110,7 @@ if systemctl is-active --quiet tor-location-panel.service 2>/dev/null; then
   systemctl stop tor-location-panel.service
 fi
 
-echo "[3/7] Installing application v$VERSION..."
+echo "[3/8] Installing application v$VERSION..."
 rsync -a --delete \
   --exclude '.git' --exclude 'venv' --exclude '.venv-old' \
   --exclude '__pycache__' --exclude '*.pyc' \
@@ -98,15 +133,25 @@ if ! python3 -m venv "$VENV_DIR"; then
   echo "Failed to create Python virtual environment."
   exit 1
 fi
-if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip wheel; then
+if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" --upgrade pip wheel; then
   restore_old_venv
   echo "Failed to prepare Python virtual environment."
+  echo "On restricted networks set TORPANEL_DOWNLOAD_PROXY or TORPANEL_PIP_INDEX_URL and retry."
   exit 1
 fi
-if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check "$APP_DIR"; then
-  restore_old_venv
-  echo "Failed to install application dependencies."
-  exit 1
+if [[ -d "$APP_DIR/vendor/wheels" ]] && find "$APP_DIR/vendor/wheels" -maxdepth 1 -type f -name '*.whl' | grep -q .; then
+  echo "Using bundled Python wheel cache."
+  if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-index --find-links "$APP_DIR/vendor/wheels" "$APP_DIR"; then
+    echo "Bundled wheel cache was not compatible with this host; falling back to configured package index."
+    "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR" || { restore_old_venv; exit 1; }
+  fi
+else
+  if ! "$VENV_DIR/bin/python" -m pip install "${pip_args[@]}" "$APP_DIR"; then
+    restore_old_venv
+    echo "Failed to install application dependencies."
+    echo "On restricted networks set TORPANEL_DOWNLOAD_PROXY or TORPANEL_PIP_INDEX_URL and retry."
+    exit 1
+  fi
 fi
 rm -rf "$OLD_VENV"
 
@@ -115,7 +160,7 @@ install -m 0644 "$APP_DIR/systemd/tor-location@.service" /etc/systemd/system/tor
 install -m 0644 "$APP_DIR/systemd/tor-location-gateway.service" /etc/systemd/system/tor-location-gateway.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel.service" /etc/systemd/system/tor-location-panel.service
 
-echo "[4/7] Configuring persistent settings..."
+echo "[4/8] Configuring persistent settings..."
 if [[ $EXISTING -eq 0 ]]; then
   ADMIN_USER="${TORPANEL_ADMIN_USERNAME:-admin}"
   ADMIN_PASS="${TORPANEL_ADMIN_PASSWORD:-$(openssl rand -base64 18 | tr -d '\n=/+' | head -c 20)}"
@@ -146,6 +191,9 @@ TORPANEL_GATEWAY_CONFIG=${ETC_DIR}/xray-gateway.json
 TORPANEL_XRAY_BIN=$(command -v xray)
 TORPANEL_HELPER_CMD=sudo -n ${APP_DIR}/venv/bin/python -m torpanel.helper apply
 TORPANEL_UPDATE_REPO=hazhanhasani/tor
+TORPANEL_GITHUB_API_BASE=${GITHUB_API_BASE}
+TORPANEL_RELEASE_MIRROR_BASE=${RELEASE_MIRROR_BASE}
+TORPANEL_DOWNLOAD_PROXY=${DOWNLOAD_PROXY}
 TORPANEL_VERSION_FILE=${APP_DIR}/VERSION
 TORPANEL_UPDATE_STATE_PATH=${DATA_DIR}/update-state.json
 TORPANEL_UPDATER_CMD=sudo -n $(command -v systemd-run) --unit=tor-location-manager-update --collect --property=Type=exec /usr/local/sbin/tor-location-manager-update
@@ -162,6 +210,9 @@ else
     grep -q "^${key}=" "$ENV_FILE" || printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
   }
   ensure_env TORPANEL_UPDATE_REPO hazhanhasani/tor
+  ensure_env TORPANEL_GITHUB_API_BASE "$GITHUB_API_BASE"
+  ensure_env TORPANEL_RELEASE_MIRROR_BASE "$RELEASE_MIRROR_BASE"
+  ensure_env TORPANEL_DOWNLOAD_PROXY "$DOWNLOAD_PROXY"
   ensure_env TORPANEL_VERSION_FILE "$APP_DIR/VERSION"
   ensure_env TORPANEL_UPDATE_STATE_PATH "$DATA_DIR/update-state.json"
   ensure_env TORPANEL_UPDATER_CMD "sudo -n $(command -v systemd-run) --unit=tor-location-manager-update --collect --property=Type=exec /usr/local/sbin/tor-location-manager-update"
@@ -177,7 +228,7 @@ EOF
 chmod 0440 /etc/sudoers.d/tor-location-manager
 visudo -cf /etc/sudoers.d/tor-location-manager >/dev/null
 
-echo "[5/7] Applying ownership and service permissions..."
+echo "[5/8] Applying ownership and service permissions..."
 touch "$DATA_DIR/panel.db"
 chown -R torpanel:torpanel "$DATA_DIR"
 mkdir -p "$DATA_DIR/tor"
@@ -191,11 +242,11 @@ systemctl daemon-reload
 systemctl enable tor-location-panel.service >/dev/null
 systemctl restart tor-location-panel.service
 
-echo "[6/7] Running health check..."
+echo "[6/8] Running panel health check..."
 PANEL_PORT="$(awk -F= '$1=="TORPANEL_PORT"{print $2}' "$ENV_FILE" | tail -1)"
 PANEL_PORT="${PANEL_PORT:-8787}"
 HEALTHY=0
-for _ in $(seq 1 15); do
+for _ in $(seq 1 20); do
   if curl -fsS --max-time 2 "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null 2>&1; then HEALTHY=1; break; fi
   sleep 1
 done
@@ -206,7 +257,20 @@ if [[ $HEALTHY -ne 1 ]]; then
   exit 1
 fi
 
-echo "[7/7] Installation complete."
+echo "[7/8] Checking restricted-network helpers..."
+if command -v obfs4proxy >/dev/null 2>&1; then
+  echo "obfs4 bridge transport is available for restricted networks."
+else
+  echo "Warning: obfs4 bridge transport is not installed. Direct Tor mode is still available."
+fi
+if [[ -n "$DOWNLOAD_PROXY" ]]; then
+  echo "Download proxy is configured for GitHub/Python downloads."
+fi
+if [[ -n "$RELEASE_MIRROR_BASE" ]]; then
+  echo "Custom release mirror is configured: $RELEASE_MIRROR_BASE"
+fi
+
+echo "[8/8] Installation complete."
 echo
 echo "Tor Location Manager v$VERSION is ready."
 echo "Panel: http://SERVER_IP:${PANEL_PORT}"
@@ -217,4 +281,5 @@ if [[ $EXISTING -eq 0 ]]; then
 else
   echo "Existing credentials, database and 3x-ui settings were preserved."
 fi
-echo "Updates: open the panel and use the بروزرسانی section after publishing a GitHub Release."
+echo "For Iran/restricted networks: open اتصال 3x-ui and configure Tor bridge mode if direct Tor bootstrap is blocked."
+echo "Updates support official GitHub API asset fallback plus an optional custom release mirror/proxy."

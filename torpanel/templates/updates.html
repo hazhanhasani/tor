@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}بروزرسانی سیستم{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">RELEASE UPDATE CENTER</div><h1>بروزرسانی سیستم</h1><p class="muted">نسخه‌ها فقط از GitHub Release رسمی پروژه دریافت و پس از بررسی SHA-256 نصب می‌شوند.</p></div>
+  <form method="post" action="{{ url_for('updates_check') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">بررسی نسخه جدید</button></form>
+</section>
+
+<div class="grid">
+  <section class="card">
+    <div class="country">INSTALLED</div><h2>نسخه فعلی</h2>
+    <div class="version-number">v{{ current_version }}</div>
+    <p class="muted">تنظیمات، دیتابیس، لوکیشن‌ها و کلیدهای 3x-ui هنگام ارتقا حفظ می‌شوند.</p>
+  </section>
+  <section class="card">
+    <div class="country">LATEST RELEASE</div><h2>آخرین نسخه رسمی</h2>
+    {% if release %}
+      <div class="version-number">{{ release.tag }}</div>
+      <p>{{ release.name }}</p>
+      {% if release.update_available %}<span class="status ok">نسخه جدید موجود است</span>{% else %}<span class="status off">بروز است</span>{% endif %}
+      {% if not release.package_ready %}<div class="alert warning compact">Release منتشر شده اما Asset و checksum استاندارد آن کامل نیست.</div>{% endif %}
+    {% else %}<p class="muted">اطلاعات Release در دسترس نیست.</p>{% endif %}
+  </section>
+</div>
+
+{% if release and release.update_available and release.package_ready %}
+<section class="panel update-panel">
+  <h2>نصب {{ release.tag }}</h2>
+  <p>قبل از نصب از برنامه، دیتابیس، سرویس‌ها و تنظیمات Backup گرفته می‌شود. اگر Health Check نسخه جدید شکست بخورد، سیستم خودکار Rollback می‌کند.</p>
+  {% if release.notes %}<details><summary>Release notes</summary><pre class="release-notes">{{ release.notes }}</pre></details>{% endif %}
+  <form method="post" action="{{ url_for('updates_install') }}" onsubmit="return confirm('بروزرسانی {{ release.tag }} نصب شود؟ پنل هنگام نصب برای مدت کوتاهی Restart خواهد شد.')">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="tag" value="{{ release.tag }}">
+    <button class="button primary" type="submit">Backup و نصب بروزرسانی</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>وضعیت آخرین عملیات</h2>
+  <dl>
+    <div><dt>وضعیت</dt><dd>{{ state.status or 'idle' }}</dd></div>
+    {% if state.target %}<div><dt>نسخه هدف</dt><dd>{{ state.target }}</dd></div>{% endif %}
+    {% if state.message %}<div><dt>پیام</dt><dd>{{ state.message }}</dd></div>{% endif %}
+    {% if state.backup_path %}<div><dt>Backup</dt><dd>{{ state.backup_path }}</dd></div>{% endif %}
+    {% if state.updated_at %}<div><dt>آخرین تغییر</dt><dd>{{ state.updated_at }}</dd></div>{% endif %}
+  </dl>
+  {% if log_tail %}<details><summary>نمایش لاگ بروزرسانی</summary><pre class="update-log">{{ log_tail }}</pre></details>{% endif %}
+</section>
+
+<div class="note"><strong>روش انتشار:</strong> نسخه جدید را در <code>VERSION</code> و <code>pyproject.toml</code> هماهنگ کنید و Tag مثل <code>v1.2.0</code> منتشر کنید. Workflow پروژه بسته Release و SHA-256 را خودکار می‌سازد.</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}لاگ و سلامت | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">SYSTEM HEALTH & LOGS</div><h1>لاگ و سلامت</h1><p>وضعیت سرویس‌های اصلی و آخرین رخدادهای systemd را بدون SSH بررسی کنید.</p></div>
+  <div class="page-actions"><label class="check check-card" style="padding:8px 11px"><input type="checkbox" data-log-auto-refresh><span><b>بروزرسانی خودکار</b><small>هر ۱۰ ثانیه</small></span></label></div>
+</section>
+
+<section class="panel">
+  <div class="section-title"><div><h2>وضعیت سرویس‌ها</h2><p>ActiveState و SubState هر جزء</p></div></div>
+  <div class="health-table">
+    {% for item in health %}
+    <div class="health-row"><div><strong>{{ item.label }}</strong><div class="unit muted">{{ item.unit }}</div></div><span class="status {{ 'ok' if item.active == 'active' else 'warn' if item.active in ['activating','reloading'] else 'off' }}">{{ item.active }}</span><span class="muted">{{ item.sub }}</span></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="log-toolbar"><div><strong style="font-size:13px">{{ selected_source.label }}</strong><div class="muted mono" style="font-size:10px">{{ selected_source.unit }}</div></div><button class="button small" type="button" data-copy="#serviceLog">{{ icon('copy') }} کپی</button></div>
+  <div class="source-tabs">
+    {% for item in sources %}<a class="source-tab {{ 'active' if item.key == selected else '' }}" href="{{ url_for('logs', source=item.key) }}">{{ item.label }}</a>{% endfor %}
+  </div>
+  <pre class="log-view" id="serviceLog" style="margin-top:12px">{{ log_text }}</pre>
+</section>
+
+<div class="callout" style="margin-top:14px"><strong>حریم دسترسی:</strong> این صفحه فقط لاگ سرویس‌های همین پروژه را نمایش می‌دهد. دسترسی نوشتن به journal یا اجرای دستور آزاد از UI وجود ندارد.</div>
+{% endblock %}

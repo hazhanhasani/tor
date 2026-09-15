@@ -54,6 +54,11 @@ def _cached_release() -> dict[str, Any] | None:
         return None
 
 
+def cached_update_available() -> bool:
+    cached = _cached_release()
+    return bool(cached and cached.get("update_available") and cached.get("package_ready"))
+
+
 def latest_release(force: bool = False) -> dict[str, Any]:
     if not force:
         cached = _cached_release()

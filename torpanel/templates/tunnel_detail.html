@@ -3,14 +3,14 @@
 {% block title %}{{ link.name }} | تانل ترکیبی{% endblock %}
 {% block content %}
 <section class="page-head">
-  <div><div class="eyebrow">HYBRID LINK</div><h1>{{ link.name }}</h1><p>Overlay اختصاصی {{ link.subnet_cidr }} با WireGuard مستقیم و Reverse FRP به‌عنوان مسیر جایگزین.</p></div>
+  <div><div class="eyebrow">HYBRID LINK</div><h1>{{ link.name }}</h1><p>Overlay اختصاصی {{ link.subnet_cidr }} با WireGuard مستقیم، Reverse FRP و Egress Policy Routing ضد fallback.</p></div>
   <div class="page-actions"><a class="button" href="{{ url_for('tunnels.tunnel_index') }}">بازگشت به Tunnelها</a></div>
 </section>
 
 <div class="tunnel-hero panel">
   <div class="tunnel-path">
     <div class="path-node {{ 'online' if link.iran_online else '' }}"><span class="path-kicker">IRAN EDGE</span><strong>{{ link.iran_node.name if link.iran_node else 'در انتظار نصب' }}</strong><small>{{ link.iran_overlay_ip }}</small></div>
-    <div class="path-line"><span class="path-method">{% if link.active_transport == 'direct' %}WireGuard Direct{% elif link.active_transport == 'reverse' %}Reverse FRP{% else %}Auto Hybrid{% endif %}</span><div class="path-track"><span></span></div><small>Encrypted Overlay</small></div>
+    <div class="path-line"><span class="path-method">{% if link.active_transport == 'direct' %}WireGuard Direct{% elif link.active_transport == 'reverse' %}Reverse FRP{% else %}Auto Hybrid{% endif %}</span><div class="path-track"><span></span></div><small>Encrypted Overlay + Policy Egress</small></div>
     <div class="path-node {{ 'online' if link.foreign_online else '' }}"><span class="path-kicker">FOREIGN EGRESS</span><strong>{{ link.foreign_node.name if link.foreign_node else 'در انتظار نصب' }}</strong><small>{{ link.foreign_overlay_ip }}</small></div>
   </div>
   <div class="tunnel-badges">
@@ -22,31 +22,35 @@
 
 <div class="section-grid" style="margin-top:16px">
   <section class="panel">
-    <div class="section-title"><div><h2>سرور ایران</h2><p>Ingress / FRP Server / WireGuard initiator</p></div><span class="status {{ 'ok' if link.iran_online else 'off' }}">{{ 'آنلاین' if link.iran_online else ('ثبت شده' if link.iran_node else 'نصب نشده') }}</span></div>
+    <div class="section-title"><div><h2>سرور ایران</h2><p>Ingress / FRP Server / WireGuard initiator / Policy Router</p></div><span class="status {{ 'ok' if link.iran_online else 'off' }}">{{ 'آنلاین' if link.iran_online else ('ثبت شده' if link.iran_node else 'نصب نشده') }}</span></div>
     {% if link.iran_node %}
       <dl class="detail-list">
         <div><dt>Node</dt><dd>{{ link.iran_node.name }}</dd></div>
         <div><dt>Overlay IP</dt><dd>{{ link.iran_overlay_ip }}</dd></div>
         <div><dt>Endpoint</dt><dd>{{ masked_iran_host }}</dd></div>
+        <div><dt>Agent</dt><dd>{{ link.iran_node.agent_version or 'قدیمی/نامشخص' }} · هدف {{ agent_version }}</dd></div>
         <div><dt>آخرین Heartbeat</dt><dd>{{ link.iran_node.last_seen or '—' }}</dd></div>
       </dl>
+      {% if link.iran_node.agent_version != agent_version %}<div class="install-command" style="margin-top:12px"><div class="install-command-head"><strong>Agent ایران نیاز به بروزرسانی دارد</strong><button class="button small" type="button" data-copy="#upgradeIranCommand">{{ icon('copy') }} کپی</button></div><pre id="upgradeIranCommand">{{ upgrade_command }}</pre></div>{% endif %}
     {% elif commands.iran %}
       <div class="install-command"><div class="install-command-head"><strong>این دستور را روی سرور ایران اجرا کن</strong><button class="button small" type="button" data-copy="#iranCommand">{{ icon('copy') }} کپی</button></div><pre id="iranCommand">{{ commands.iran }}</pre></div>
-      {% if controller_url.startswith('http://') %}<div class="alert warning compact">Controller روی HTTP است؛ دستور شامل <code>--allow-http</code> می‌شود. برای Production بهتر است ابتدا HTTPS فعال شود.</div>{% endif %}
+      {% if controller_url.startswith('http://') %}<div class="alert warning compact">Controller روی HTTP است؛ دستور شامل <code>--allow-http</code> می‌شود. برای Production بهتر است HTTPS فعال شود.</div>{% endif %}
     {% else %}
       <form method="post" action="{{ url_for('tunnels.tunnel_enrollment', link_uuid=link.uuid, role='iran') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button primary" type="submit">ساخت دستور نصب ایران</button></form>
     {% endif %}
   </section>
 
   <section class="panel">
-    <div class="section-title"><div><h2>سرور خارج</h2><p>Egress / WireGuard listener / Reverse FRP client</p></div><span class="status {{ 'ok' if link.foreign_online else 'off' }}">{{ 'آنلاین' if link.foreign_online else ('ثبت شده' if link.foreign_node else 'نصب نشده') }}</span></div>
+    <div class="section-title"><div><h2>سرور خارج</h2><p>Egress / WireGuard listener / Reverse FRP client / NAT</p></div><span class="status {{ 'ok' if link.foreign_online else 'off' }}">{{ 'آنلاین' if link.foreign_online else ('ثبت شده' if link.foreign_node else 'نصب نشده') }}</span></div>
     {% if link.foreign_node %}
       <dl class="detail-list">
         <div><dt>Node</dt><dd>{{ link.foreign_node.name }}</dd></div>
         <div><dt>Overlay IP</dt><dd>{{ link.foreign_overlay_ip }}</dd></div>
         <div><dt>Endpoint</dt><dd>{{ masked_foreign_host }}</dd></div>
+        <div><dt>Agent</dt><dd>{{ link.foreign_node.agent_version or 'قدیمی/نامشخص' }} · هدف {{ agent_version }}</dd></div>
         <div><dt>آخرین Heartbeat</dt><dd>{{ link.foreign_node.last_seen or '—' }}</dd></div>
       </dl>
+      {% if link.foreign_node.agent_version != agent_version %}<div class="install-command" style="margin-top:12px"><div class="install-command-head"><strong>Agent خارج نیاز به بروزرسانی دارد</strong><button class="button small" type="button" data-copy="#upgradeForeignCommand">{{ icon('copy') }} کپی</button></div><pre id="upgradeForeignCommand">{{ upgrade_command }}</pre></div>{% endif %}
     {% elif commands.foreign %}
       <div class="install-command"><div class="install-command-head"><strong>این دستور را روی سرور خارج اجرا کن</strong><button class="button small" type="button" data-copy="#foreignCommand">{{ icon('copy') }} کپی</button></div><pre id="foreignCommand">{{ commands.foreign }}</pre></div>
       {% if controller_url.startswith('http://') %}<div class="alert warning compact">برای Enrollment امن، HTTPS توصیه می‌شود.</div>{% endif %}
@@ -69,24 +73,58 @@
   </form>
 </section>
 
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>Routing پنل‌ها از این سرور خارج</h2><p>Inboundهای انتخابی در 3x-ui یا PasarGuard با <code>sendThrough={{ link.iran_overlay_ip }}</code> وارد Policy Route این Tunnel می‌شوند.</p></div><span class="status {{ 'ok' if link.ready else 'warn' }}">{{ 'آماده Routing' if link.ready else 'منتظر Nodeها' }}</span></div>
+  {% for error in provider_errors %}<div class="callout warning" style="margin-bottom:10px">{{ error }}</div>{% endfor %}
+  <form method="post" action="{{ url_for('tunnels.tunnel_routing', link_uuid=link.uuid) }}" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <div class="section-grid">
+      <div class="form-section">
+        <div class="form-section-title"><span class="form-section-number">3X</span><div><h3>3x-ui</h3><p>Inboundهای دستی که باید از Foreign Egress این Tunnel خارج شوند.</p></div></div>
+        {% if xui_inbounds %}
+          <div class="checks">
+          {% for item in xui_inbounds %}
+            <label class="check row"><input type="checkbox" name="xui_inbound_tags" value="{{ item.tag }}" {% if item.tag in xui_selected %}checked{% endif %}><span><b>{{ item.remark or item.tag }}</b><small>{{ item.protocol }}{% if item.port %} · port {{ item.port }}{% endif %} · {{ item.tag }}</small></span></label>
+          {% endfor %}
+          </div>
+        {% else %}<div class="callout">3x-ui تنظیم نشده یا Inbound قابل انتخابی پیدا نشد.</div>{% endif %}
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title"><span class="form-section-number">PG</span><div><h3>PasarGuard</h3><p>Inboundهای Core انتخابی که باید از همین Tunnel خارج شوند.</p></div></div>
+        {% if pasarguard_inbounds %}
+          <div class="checks">
+          {% for item in pasarguard_inbounds %}
+            <label class="check row"><input type="checkbox" name="pasarguard_inbound_tags" value="{{ item.tag }}" {% if item.tag in pasarguard_selected %}checked{% endif %}><span><b>{{ item.tag }}</b><small>{{ item.protocol }}{% if item.port %} · port {{ item.port }}{% endif %}{% if item.listen %} · {{ item.listen }}{% endif %}</small></span></label>
+          {% endfor %}
+          </div>
+        {% else %}<div class="callout">PasarGuard تنظیم نشده یا Core انتخابی Inbound قابل خواندن ندارد.</div>{% endif %}
+      </div>
+    </div>
+    <div class="callout warning"><strong>محل اجرای Xray مهم است:</strong> Xray مربوط به 3x-ui یا PasarGuard باید روی همین Iran Edge اجرا شود؛ چون IP مبدأ Overlay فقط روی این سرور وجود دارد. در PasarGuard یک Core مشترک روی چند Node ناهمسان را به Tunnel Route وصل نکنید مگر Overlay یکسان روی همه آن Nodeها برقرار باشد.</div>
+    <div class="actions"><button class="button primary" type="submit">{{ icon('sync') }} ذخیره و Sync Routing</button></div>
+  </form>
+</section>
+
 <div class="section-grid" style="margin-top:16px">
   <section class="panel">
     <div class="section-title"><div><h2>جزئیات شبکه</h2><p>این مقادیر داخلی هستند و به کانفیگ End-user وارد نمی‌شوند.</p></div></div>
     <dl class="detail-list">
       <div><dt>Overlay subnet</dt><dd>{{ link.subnet_cidr }}</dd></div>
+      <div><dt>Iran source IP</dt><dd>{{ link.iran_overlay_ip }}</dd></div>
       <div><dt>Foreign WireGuard UDP</dt><dd>{{ link.foreign_wg_port }}</dd></div>
       <div><dt>Iran FRP control TCP</dt><dd>{{ link.iran_frp_control_port }}</dd></div>
       <div><dt>Reverse UDP local port</dt><dd>127.0.0.1:{{ link.iran_frp_proxy_port }}</dd></div>
     </dl>
   </section>
   <aside class="panel">
-    <div class="status-banner success"><div class="status-icon">{{ icon('shield') }}</div><div><strong>Foreign IP Isolation</strong><p>برای سرویس‌های روی سرور ایران از IP خارج استفاده نکن؛ مقصد را روی {{ link.foreign_overlay_ip }} تنظیم کن. اگر Tunnel قطع شود Overlay route نیز از دسترس خارج می‌شود و مسیر مستقیم به IP عمومی خارج ایجاد نمی‌شود.</p></div></div>
-    <div class="status-banner warning"><div class="status-icon">{{ icon('wifi') }}</div><div><strong>محدودیت واقعی</strong><p>IP endpoint بین دو سرور در لایه شبکه برای peer و ISP مسیر قابل مشاهده است. این سیستم از افشای IP در کانفیگ کاربران و fallback ناخواسته جلوگیری می‌کند، نه از واقعیت مسیریابی اینترنت.</p></div></div>
+    <div class="status-banner success"><div class="status-icon">{{ icon('shield') }}</div><div><strong>Leak-safe Egress</strong><p>ترافیک پنل با Source Overlay وارد جدول Route اختصاصی می‌شود. جدول اختصاصی یک مسیر Tunnel و Blackhole fallback دارد؛ در نتیجه قطع Tunnel نباید باعث fallback همان Source به Default Route عمومی ایران شود.</p></div></div>
+    <div class="status-banner warning"><div class="status-icon">{{ icon('wifi') }}</div><div><strong>محدودیت واقعی</strong><p>IP endpoint بین دو سرور برای peer، دیتاسنتر و ISP مسیر قابل مشاهده است. این طراحی IP عمومی خارج را از کانفیگ/Route کاربر حذف می‌کند و جلوی fallback ناخواسته را می‌گیرد، نه اینکه Endpoint اینترنتی را نامرئی کند.</p></div></div>
   </aside>
 </div>
 
 <section class="panel danger-zone" style="margin-top:16px">
-  <div class="section-title"><div><h2>حذف اتصال</h2><p>بعد از حذف Link، Agentها در Poll بعدی Interface و سرویس‌های متعلق به آن را پاک می‌کنند.</p></div></div>
+  <div class="section-title"><div><h2>حذف اتصال</h2><p>بعد از حذف Link، Routeهای 3x-ui/PasarGuard پاک می‌شوند و Agentها در Poll بعدی Interface، Policy Route و سرویس‌های متعلق به آن را پاک می‌کنند.</p></div></div>
   <form method="post" action="{{ url_for('tunnels.tunnel_delete', link_uuid=link.uuid) }}" onsubmit="return confirm('این Tunnel حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button danger" type="submit">{{ icon('trash') }} حذف Tunnel</button></form>
 </section>
 {% endblock %}

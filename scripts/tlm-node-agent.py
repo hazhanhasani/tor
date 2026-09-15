@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 CONFIG_DIR = Path("/etc/tor-location-node")
 STATE_DIR = Path("/var/lib/tor-location-node")
 AGENT_CONFIG = CONFIG_DIR / "agent.json"
@@ -75,7 +75,7 @@ def json_read(path: Path, default: dict[str, Any] | None = None) -> dict[str, An
 
 def ssl_context(insecure: bool) -> ssl.SSLContext:
     if insecure:
-        return ssl._create_unverified_context()  # noqa: SLF001 - explicit admin opt-in.
+        return ssl._create_unverified_context()
     return ssl.create_default_context()
 
 
@@ -272,6 +272,7 @@ def capabilities() -> dict[str, Any]:
         "frpc": command_exists("frpc"),
         "frps": command_exists("frps"),
         "nft": command_exists("nft"),
+        "policy_routing": command_exists("ip"),
         "architecture": platform.machine(),
     }
     for name in ("wg", "frpc", "frps"):
@@ -340,6 +341,30 @@ def install_agent(panel: str, token: str, name: str, advertise_host: str, insecu
     print("Hybrid tunnel agent is running.")
 
 
+def upgrade_agent(panel: str, insecure: bool, allow_http: bool) -> None:
+    require_root()
+    config = json_read(AGENT_CONFIG)
+    if not config:
+        raise AgentError("Node is not enrolled; use the normal install command first")
+    panel = (panel or str(config.get("panel") or "")).rstrip("/")
+    if not panel.startswith(("https://", "http://")):
+        raise AgentError("--panel must start with https:// or http://")
+    if panel.startswith("http://") and not (allow_http or bool(config.get("allow_http"))):
+        raise AgentError("Plain HTTP controller requires --allow-http")
+    config["panel"] = panel
+    if insecure:
+        config["insecure"] = True
+    if allow_http:
+        config["allow_http"] = True
+    json_write(AGENT_CONFIG, config)
+    source = Path(__file__).read_bytes()
+    SELF_PATH.write_bytes(source)
+    os.chmod(SELF_PATH, 0o755)
+    run("systemctl", "daemon-reload", check=False)
+    run("systemctl", "restart", "tor-location-node-agent.service", check=False)
+    print(f"Node agent upgraded to {AGENT_VERSION}.")
+
+
 def endpoint_text(host: str, port: int) -> str:
     host = host.strip()
     if ":" in host and not host.startswith("["):
@@ -353,6 +378,7 @@ def _wg_config(link: dict[str, Any], private_key: str, endpoint: dict[str, Any] 
         "[Interface]",
         f"PrivateKey = {private_key}",
         f"Address = {link['address']}",
+        "Table = off",
     ]
     if int(link.get("listen_port") or 0) > 0:
         lines.append(f"ListenPort = {int(link['listen_port'])}")
@@ -498,7 +524,7 @@ def peer_ping(ip: str) -> tuple[bool, float | None]:
 
 
 def load_runtime() -> dict[str, Any]:
-    return json_read(RUNTIME_STATE, {"links": {}})
+    return json_read(RUNTIME_STATE, {"links": {}, "egress": {}})
 
 
 def save_runtime(value: dict[str, Any]) -> None:
@@ -529,13 +555,11 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
     current = str(item.get("transport") or "direct")
     last_probe = float(item.get("last_direct_probe") or 0)
     now = time.time()
-    health_timeout = max(5, min(int(link.get("health_timeout") or 45), 300))
 
     if current == "reverse":
         set_wg_endpoint(link, reverse)
         ok, rtt = peer_ping(str(link["peer_ip"]))
         if ok and now - last_probe < 180:
-            item.pop("direct_failure_since", None)
             return "reverse", rtt, "reverse-healthy"
         item["last_direct_probe"] = now
         set_wg_endpoint(link, direct)
@@ -543,7 +567,6 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
         direct_ok, direct_rtt = peer_ping(str(link["peer_ip"]))
         if direct_ok:
             item["transport"] = "direct"
-            item.pop("direct_failure_since", None)
             return "direct", direct_rtt, "direct-recovered"
         set_wg_endpoint(link, reverse)
         time.sleep(0.5)
@@ -555,67 +578,150 @@ def choose_path(link: dict[str, Any], runtime: dict[str, Any]) -> tuple[str, flo
     ok, rtt = peer_ping(str(link["peer_ip"]))
     if ok:
         item["transport"] = "direct"
-        item.pop("direct_failure_since", None)
         return "direct", rtt, "direct-healthy"
-
-    failed_since = float(item.get("direct_failure_since") or now)
-    item.setdefault("direct_failure_since", now)
-    if now - failed_since < health_timeout:
-        item["transport"] = "direct"
-        return "down", None, f"direct-debounce-{int(now - failed_since)}s"
-
     set_wg_endpoint(link, reverse)
     time.sleep(0.8)
     ok, rtt = peer_ping(str(link["peer_ip"]))
-    if ok:
-        item["transport"] = "reverse"
-        item.pop("direct_failure_since", None)
-        item["last_direct_probe"] = now
-        return "reverse", rtt, "direct-failed-failover-complete"
-    item["transport"] = "down"
-    return "down", rtt, "direct-and-reverse-failed"
+    item["transport"] = "reverse" if ok else "down"
+    return ("reverse" if ok else "down"), rtt, "direct-failed"
+
+
+def _validate_egress(link: dict[str, Any]) -> tuple[str, int, int]:
+    egress = link.get("egress") or {}
+    source = str(egress.get("source_ip") or "")
+    try:
+        ip = ipaddress.ip_address(source)
+    except ValueError as exc:
+        raise AgentError("Invalid egress source IP") from exc
+    if ip.version != 4:
+        raise AgentError("Only IPv4 egress is currently supported")
+    table = int(egress.get("route_table") or 0)
+    priority = int(egress.get("rule_priority") or 0)
+    if not 10000 <= table <= 29999 or not 10000 <= priority <= 29999:
+        raise AgentError("Invalid policy-routing table or priority")
+    return source, table, priority
+
+
+def ensure_egress(link: dict[str, Any]) -> dict[str, Any]:
+    source, table, priority = _validate_egress(link)
+    if link["role"] == "iran":
+        iface = str(link["interface"])
+        run("ip", "-4", "route", "replace", "blackhole", "default", "table", str(table), "metric", "32767", check=False)
+        route = run(
+            "ip", "-4", "route", "replace", "default", "dev", iface, "table", str(table), "metric", "10",
+            check=False,
+        )
+        if route.returncode != 0:
+            raise AgentError(route.stdout.strip() or "failed to install tunnel egress route")
+        run(
+            "ip", "-4", "rule", "del", "pref", str(priority), "from", f"{source}/32", "lookup", str(table),
+            check=False,
+        )
+        rule = run(
+            "ip", "-4", "rule", "add", "pref", str(priority), "from", f"{source}/32", "lookup", str(table),
+            check=False,
+        )
+        if rule.returncode != 0 and "File exists" not in rule.stdout:
+            raise AgentError(rule.stdout.strip() or "failed to install tunnel policy rule")
+    else:
+        try:
+            Path("/proc/sys/net/ipv4/ip_forward").write_text("1\n", encoding="ascii")
+        except OSError as exc:
+            raise AgentError(f"failed to enable IPv4 forwarding: {exc}") from exc
+    return {
+        "role": link["role"],
+        "source_ip": source,
+        "route_table": table,
+        "rule_priority": priority,
+        "interface": str(link["interface"]),
+    }
+
+
+def cleanup_stale_egress(runtime: dict[str, Any], desired: dict[str, dict[str, Any]]) -> None:
+    previous = runtime.get("egress") if isinstance(runtime.get("egress"), dict) else {}
+    for link_uuid, item in previous.items():
+        if link_uuid in desired or not isinstance(item, dict) or item.get("role") != "iran":
+            continue
+        source = str(item.get("source_ip") or "")
+        table = int(item.get("route_table") or 0)
+        priority = int(item.get("rule_priority") or 0)
+        if source and table and priority:
+            run(
+                "ip", "-4", "rule", "del", "pref", str(priority), "from", f"{source}/32", "lookup", str(table),
+                check=False,
+            )
+            run("ip", "-4", "route", "flush", "table", str(table), check=False)
+    runtime["egress"] = desired
 
 
 def apply_firewall(links: list[dict[str, Any]]) -> dict[str, Any]:
     if not command_exists("nft"):
         return {"enabled": False, "reason": "nft-not-installed"}
-    guarded = [link for link in links if link.get("ready") and link.get("kill_switch")]
+    ready = [link for link in links if link.get("ready")]
+    guarded = [link for link in ready if link.get("kill_switch")]
+    foreign = [link for link in ready if link.get("role") == "foreign"]
     run("nft", "delete", "table", "inet", "tlm_tunnel", check=False)
-    if not guarded:
-        return {"enabled": False, "reason": "no-guarded-links"}
-    commands = [
-        "add table inet tlm_tunnel",
-        "add chain inet tlm_tunnel input { type filter hook input priority -40; policy accept; }",
-    ]
-    for link in guarded:
-        if link["role"] == "foreign":
-            fw = link.get("firewall") or {}
-            port = int(fw.get("wg_port") or 0)
-            source = str(fw.get("allow_source") or "")
-            if port:
-                commands.append(f'add rule inet tlm_tunnel input iifname "lo" udp dport {port} accept')
-                try:
-                    ip = ipaddress.ip_address(source)
-                    family = "ip6" if ip.version == 6 else "ip"
-                    commands.append(f"add rule inet tlm_tunnel input {family} saddr {source} udp dport {port} accept")
-                except ValueError:
-                    pass
-                commands.append(f"add rule inet tlm_tunnel input udp dport {port} drop")
-        elif link["role"] == "iran":
-            frp = link.get("frp") or {}
-            port = int(frp.get("control_port") or 0)
-            source = str(frp.get("allow_source") or "")
-            if port and source:
-                try:
-                    ip = ipaddress.ip_address(source)
-                    family = "ip6" if ip.version == 6 else "ip"
-                    commands.append(f"add rule inet tlm_tunnel input {family} saddr {source} tcp dport {port} accept")
-                    commands.append(f"add rule inet tlm_tunnel input tcp dport {port} drop")
-                except ValueError:
-                    pass
-    script = "\n".join(commands) + "\n"
-    result = run("nft", "-f", "-", check=False, input_text=script)
-    return {"enabled": result.returncode == 0, "error": result.stdout.strip()[:500] if result.returncode else ""}
+    run("nft", "delete", "table", "ip", "tlm_tunnel_nat", check=False)
+
+    errors: list[str] = []
+    if guarded:
+        commands = [
+            "add table inet tlm_tunnel",
+            "add chain inet tlm_tunnel input { type filter hook input priority -40; policy accept; }",
+        ]
+        for link in guarded:
+            if link["role"] == "foreign":
+                fw = link.get("firewall") or {}
+                port = int(fw.get("wg_port") or 0)
+                source = str(fw.get("allow_source") or "")
+                if port:
+                    commands.append(f'add rule inet tlm_tunnel input iifname "lo" udp dport {port} accept')
+                    try:
+                        ip = ipaddress.ip_address(source)
+                        family = "ip6" if ip.version == 6 else "ip"
+                        commands.append(f"add rule inet tlm_tunnel input {family} saddr {source} udp dport {port} accept")
+                    except ValueError:
+                        pass
+                    commands.append(f"add rule inet tlm_tunnel input udp dport {port} drop")
+            elif link["role"] == "iran":
+                frp = link.get("frp") or {}
+                port = int(frp.get("control_port") or 0)
+                source = str(frp.get("allow_source") or "")
+                if port and source:
+                    try:
+                        ip = ipaddress.ip_address(source)
+                        family = "ip6" if ip.version == 6 else "ip"
+                        commands.append(f"add rule inet tlm_tunnel input {family} saddr {source} tcp dport {port} accept")
+                        commands.append(f"add rule inet tlm_tunnel input tcp dport {port} drop")
+                    except ValueError:
+                        pass
+        result = run("nft", "-f", "-", check=False, input_text="\n".join(commands) + "\n")
+        if result.returncode != 0:
+            errors.append(result.stdout.strip()[:500])
+
+    if foreign:
+        nat = [
+            "add table ip tlm_tunnel_nat",
+            "add chain ip tlm_tunnel_nat postrouting { type nat hook postrouting priority srcnat; policy accept; }",
+        ]
+        for link in foreign:
+            egress = link.get("egress") or {}
+            source = str(egress.get("source_ip") or "")
+            iface = str(link.get("interface") or "")
+            try:
+                ipaddress.IPv4Address(source)
+            except ValueError:
+                continue
+            if not re.fullmatch(r"tlm[a-f0-9]{1,7}", iface):
+                continue
+            nat.append(
+                f'add rule ip tlm_tunnel_nat postrouting ip saddr {source}/32 oifname != "{iface}" masquerade'
+            )
+        result = run("nft", "-f", "-", check=False, input_text="\n".join(nat) + "\n")
+        if result.returncode != 0:
+            errors.append(result.stdout.strip()[:500])
+
+    return {"enabled": not errors, "errors": errors}
 
 
 def cleanup_stale(desired_ifaces: set[str], desired_frp_units: set[str]) -> None:
@@ -636,6 +742,7 @@ def apply_desired(desired: dict[str, Any], runtime: dict[str, Any]) -> dict[str,
     desired_ifaces: set[str] = set()
     desired_frp_units: set[str] = set()
     ready_links: list[dict[str, Any]] = []
+    desired_egress: dict[str, dict[str, Any]] = {}
 
     for link in desired.get("links", []):
         if not isinstance(link, dict):
@@ -646,6 +753,14 @@ def apply_desired(desired: dict[str, Any], runtime: dict[str, Any]) -> dict[str,
         desired_ifaces.add(str(link["interface"]))
         ready_links.append(link)
         try:
+            source, table, priority = _validate_egress(link)
+            desired_egress[str(link["uuid"])] = {
+                "role": str(link["role"]),
+                "source_ip": source,
+                "route_table": table,
+                "rule_priority": priority,
+                "interface": str(link["interface"]),
+            }
             mode = str(link.get("mode") or "auto")
             if mode in {"auto", "reverse"}:
                 ensure_frp(link)
@@ -659,6 +774,7 @@ def apply_desired(desired: dict[str, Any], runtime: dict[str, Any]) -> dict[str,
             if link["role"] == "iran":
                 initial_endpoint = link.get("reverse_endpoint") if mode == "reverse" else link.get("direct_endpoint")
             ensure_wg(link, initial_endpoint)
+            ensure_egress(link)
             transport, rtt, detail = choose_path(link, runtime)
             healthy = transport in {"direct", "reverse", "passive"}
             link_states.append({
@@ -669,6 +785,7 @@ def apply_desired(desired: dict[str, Any], runtime: dict[str, Any]) -> dict[str,
             link_states.append({"uuid": link.get("uuid"), "transport": "down", "healthy": False, "detail": str(exc)[:500]})
 
     firewall = apply_firewall(ready_links)
+    cleanup_stale_egress(runtime, desired_egress)
     cleanup_stale(desired_ifaces, desired_frp_units)
     save_runtime(runtime)
     return {"links": link_states, "firewall": firewall, "updated_at": time.time()}
@@ -723,6 +840,10 @@ def parse_args() -> argparse.Namespace:
     install.add_argument("--advertise-host", default="")
     install.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
     install.add_argument("--allow-http", action="store_true", help="Allow unencrypted controller HTTP")
+    upgrade = sub.add_parser("upgrade")
+    upgrade.add_argument("--panel", required=True)
+    upgrade.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
+    upgrade.add_argument("--allow-http", action="store_true", help="Allow unencrypted controller HTTP")
     sub.add_parser("run")
     return parser.parse_args()
 
@@ -732,6 +853,8 @@ def main() -> None:
     try:
         if args.command == "install":
             install_agent(args.panel, args.token, args.name, args.advertise_host, args.insecure, args.allow_http)
+        elif args.command == "upgrade":
+            upgrade_agent(args.panel, args.insecure, args.allow_http)
         else:
             run_agent()
     except AgentError as exc:

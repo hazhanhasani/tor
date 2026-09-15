@@ -10,11 +10,44 @@ from flask import Flask, flash, redirect, render_template, request, session, url
 from werkzeug.security import check_password_hash
 
 from .config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, FLASK_SECRET_KEY
-from .db import create_location, delete_location, get_location, get_setting, init_db, list_locations, next_socks_port, set_setting, update_location
+from .db import (
+    create_location,
+    delete_location,
+    get_location,
+    get_setting,
+    init_db,
+    list_locations,
+    list_tunnel_links,
+    next_socks_port,
+    set_setting,
+    update_location,
+)
+from .panel_sync import pasarguard_inbounds as load_pasarguard_inbounds
+from .panel_sync import sync_all_panels, xui_inbounds as load_xui_inbounds
+from .pasarguard import (
+    PasarGuardClient,
+    PasarGuardError,
+    current_settings as pasarguard_current_settings,
+    normalize_api_key as normalize_pasarguard_api_key,
+)
+from .routing_state import (
+    delete_pasarguard_tor_tags,
+    explicit_route_conflicts,
+    pasarguard_tor_tags,
+    set_pasarguard_tor_tags,
+)
 from .runtime import apply_runtime, journal_tail, service_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
+from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
-from .xui import XUIClient, XUIError, current_settings, normalize_api_token, sync_locations
+from .xui import XUIClient, XUIError, current_settings as xui_current_settings, normalize_api_token
+
+
+def _format_conflicts(conflicts: dict[str, list[str]]) -> str:
+    rows = []
+    for owner, tags in conflicts.items():
+        rows.append(f"{owner}: {', '.join(tags)}")
+    return "؛ ".join(rows)
 
 
 def make_app() -> Flask:
@@ -26,6 +59,7 @@ def make_app() -> Flask:
     app.secret_key = FLASK_SECRET_KEY
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", MAX_CONTENT_LENGTH=1024 * 1024)
     init_db()
+    app.register_blueprint(tunnel_bp)
     app.jinja_env.globals["csrf_token"] = csrf_token
 
     def login_required(fn):
@@ -36,6 +70,15 @@ def make_app() -> Flask:
             return fn(*args, **kwargs)
         return wrapped
 
+    def flash_sync_results(results: dict[str, dict], success_text: str = "Routeها همگام شدند.") -> None:
+        names = {"xui": "3x-ui", "pasarguard": "PasarGuard"}
+        successful = [names[key] for key, row in results.items() if row.get("ok") is True]
+        failed = [(names[key], row.get("error") or "خطای نامشخص") for key, row in results.items() if row.get("ok") is False]
+        if successful:
+            flash(f"{success_text} پنل‌ها: {', '.join(successful)}.", "success")
+        for name, error in failed:
+            flash(f"Sync با {name} ناموفق بود: {error}", "warning")
+
     @app.context_processor
     def update_context():
         authenticated = bool(session.get("authenticated"))
@@ -43,6 +86,12 @@ def make_app() -> Flask:
             "update_badge": bool(authenticated and cached_update_available()),
             "ui_current_version": current_version(),
             "ui_configured": bool(authenticated and get_setting("xui_base_url") and get_setting("xui_api_token")),
+            "ui_pasarguard_configured": bool(
+                authenticated
+                and get_setting("pasarguard_base_url")
+                and get_setting("pasarguard_api_key")
+                and get_setting("pasarguard_core_id", "0") not in {"", "0"}
+            ),
             "ui_transport_mode": get_setting("tor_transport_mode", "direct") if authenticated else "direct",
         }
 
@@ -83,6 +132,11 @@ def make_app() -> Flask:
         active_count = sum(1 for loc in locations if loc["active"])
         enabled_count = sum(1 for loc in locations if loc["enabled"])
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
+        pasarguard_configured = bool(
+            get_setting("pasarguard_base_url")
+            and get_setting("pasarguard_api_key")
+            and get_setting("pasarguard_core_id", "0") not in {"", "0"}
+        )
         gateway_state = unit_state("tor-location-gateway.service")
         update_info = update_state()
         recent_locations = list(reversed(locations[-4:]))
@@ -93,6 +147,7 @@ def make_app() -> Flask:
             active_count=active_count,
             enabled_count=enabled_count,
             configured=configured,
+            pasarguard_configured=pasarguard_configured,
             gateway_state=gateway_state,
             update_info=update_info,
             transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
@@ -146,10 +201,11 @@ def make_app() -> Flask:
             set_setting("tor_bridge_lines", tor_bridge_lines)
             try:
                 apply_runtime()
-                flash("تنظیمات ذخیره و روی سرویس‌های Tor اعمال شد.", "success")
+                flash("تنظیمات 3x-ui و Tor ذخیره و اعمال شد.", "success")
             except Exception as exc:
                 flash(f"تنظیمات ذخیره شد، ولی اعمال تنظیمات Tor خطا داشت: {exc}", "warning")
             return redirect(url_for("settings"))
+
         bridge_lines = get_setting("tor_bridge_lines", "")
         bridge_count = len([x for x in bridge_lines.splitlines() if x.strip() and not x.strip().startswith("#")])
         return render_template(
@@ -162,6 +218,12 @@ def make_app() -> Flask:
             tor_transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
             tor_bridge_lines=bridge_lines,
             bridge_count=bridge_count,
+            pasarguard_base_url=get_setting("pasarguard_base_url"),
+            pasarguard_core_id=get_setting("pasarguard_core_id", ""),
+            pasarguard_gateway_host=get_setting("pasarguard_gateway_host") or get_setting("gateway_host"),
+            pasarguard_verify_tls=get_setting("pasarguard_verify_tls", "1") == "1",
+            pasarguard_restart_nodes=get_setting("pasarguard_restart_nodes", "1") == "1",
+            pasarguard_has_key=bool(get_setting("pasarguard_api_key")),
         )
 
     @app.post("/settings/test")
@@ -169,11 +231,56 @@ def make_app() -> Flask:
     def settings_test():
         validate_csrf(request.form.get("_csrf"))
         try:
-            cfg = current_settings()
+            cfg = xui_current_settings()
             if not cfg.base_url.strip("/") or not cfg.api_token:
                 raise XUIError("ابتدا URL و API Token پنل را ذخیره کنید.")
             result = XUIClient(cfg).test_connection()
             flash(f"اتصال موفق بود؛ {result['inbound_count']} ورودی در 3x-ui پیدا شد.", "success")
+        except Exception as exc:
+            flash(str(exc), "danger")
+        return redirect(url_for("settings"))
+
+    @app.post("/settings/pasarguard")
+    @login_required
+    def settings_pasarguard():
+        validate_csrf(request.form.get("_csrf"))
+        base_url = request.form.get("pasarguard_base_url", "").strip().rstrip("/")
+        api_key = normalize_pasarguard_api_key(request.form.get("pasarguard_api_key", ""))
+        core_raw = request.form.get("pasarguard_core_id", "").strip()
+        gateway_host = request.form.get("pasarguard_gateway_host", "").strip()
+        if base_url and not re.match(r"^https?://", base_url, re.I):
+            flash("آدرس PasarGuard باید با http:// یا https:// شروع شود.", "danger")
+            return redirect(url_for("settings"))
+        try:
+            core_id = int(core_raw or 0)
+        except ValueError:
+            flash("Core ID پاسارگارد معتبر نیست.", "danger")
+            return redirect(url_for("settings"))
+        if core_id < 0:
+            flash("Core ID پاسارگارد معتبر نیست.", "danger")
+            return redirect(url_for("settings"))
+        set_setting("pasarguard_base_url", base_url)
+        if api_key:
+            set_setting("pasarguard_api_key", encrypt_secret(api_key))
+        set_setting("pasarguard_core_id", str(core_id) if core_id else "")
+        set_setting("pasarguard_gateway_host", gateway_host)
+        set_setting("pasarguard_verify_tls", "1" if request.form.get("pasarguard_verify_tls") == "on" else "0")
+        set_setting("pasarguard_restart_nodes", "1" if request.form.get("pasarguard_restart_nodes") == "on" else "0")
+        flash("تنظیمات PasarGuard ذخیره شد.", "success")
+        return redirect(url_for("settings"))
+
+    @app.post("/settings/pasarguard/test")
+    @login_required
+    def settings_pasarguard_test():
+        validate_csrf(request.form.get("_csrf"))
+        try:
+            cfg = pasarguard_current_settings()
+            if not cfg.base_url.strip("/") or not cfg.api_key:
+                raise PasarGuardError("ابتدا URL و API Key پاسارگارد را ذخیره کنید.")
+            result = PasarGuardClient(cfg).test_connection()
+            selected = result.get("selected_core") or {}
+            suffix = f" Core انتخابی: {selected.get('name') or selected.get('id')}." if selected else ""
+            flash(f"اتصال PasarGuard موفق بود؛ {result['core_count']} Core پیدا شد.{suffix}", "success")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("settings"))
@@ -252,14 +359,18 @@ def make_app() -> Flask:
             health.append({**item, **state})
         return render_template("logs.html", sources=sources, selected=selected, selected_source=selected_source, log_text=log_text, health=health)
 
-    def available_inbounds():
+    def available_xui_inbounds():
         try:
-            cfg = current_settings()
-            if not cfg.base_url.strip("/") or not cfg.api_token:
-                return []
-            return [x for x in XUIClient(cfg).list_inbounds() if not str(x.get("tag") or "").startswith("torloc-in-")]
+            return load_xui_inbounds()
         except Exception as exc:
             flash(f"خواندن ورودی‌های 3x-ui ممکن نشد: {exc}", "warning")
+            return []
+
+    def available_pasarguard_inbounds():
+        try:
+            return load_pasarguard_inbounds()
+        except Exception as exc:
+            flash(f"خواندن Inboundهای PasarGuard ممکن نشد: {exc}", "warning")
             return []
 
     def validate_location_form(existing_id: int | None = None):
@@ -268,6 +379,7 @@ def make_app() -> Flask:
         gateway_port_raw = request.form.get("gateway_port", "").strip()
         xui_inbound_port_raw = request.form.get("xui_inbound_port", "").strip()
         inbound_tags = [x for x in request.form.getlist("inbound_tags") if x]
+        pg_inbound_tags = [x for x in request.form.getlist("pasarguard_inbound_tags") if x]
         enabled = request.form.get("enabled") == "on"
         if not name:
             raise ValueError("نام لوکیشن الزامی است.")
@@ -291,17 +403,28 @@ def make_app() -> Flask:
         else:
             xui_inbound_port = 0
 
-        for loc in list_locations():
+        locations = list_locations()
+        existing = get_location(existing_id) if existing_id else None
+        existing_slug = str(existing.get("slug")) if existing else None
+        for loc in locations:
             if existing_id and loc["id"] == existing_id:
                 continue
             if loc["gateway_port"] == gateway_port:
                 raise ValueError("این پورت Gateway قبلاً استفاده شده است.")
             if xui_inbound_port and int(loc.get("xui_inbound_port") or 0) == xui_inbound_port:
                 raise ValueError("این پورت Inbound قبلاً برای لوکیشن دیگری استفاده شده است.")
-            overlap = set(loc["inbound_tags"]) & set(inbound_tags)
-            if overlap:
-                raise ValueError("یک ورودی دستی 3x-ui نمی‌تواند هم‌زمان به دو لوکیشن Tor متصل باشد: " + ", ".join(sorted(overlap)))
-        return name, country_code, gateway_port, xui_inbound_port, inbound_tags, enabled
+        links = list_tunnel_links()
+        xui_conflicts = explicit_route_conflicts(
+            "xui", inbound_tags, locations=locations, tunnel_links=links, exclude_location_slug=existing_slug
+        )
+        if xui_conflicts:
+            raise ValueError("Inbound 3x-ui قبلاً Route شده است: " + _format_conflicts(xui_conflicts))
+        pg_conflicts = explicit_route_conflicts(
+            "pasarguard", pg_inbound_tags, locations=locations, tunnel_links=links, exclude_location_slug=existing_slug
+        )
+        if pg_conflicts:
+            raise ValueError("Inbound پاسارگارد قبلاً Route شده است: " + _format_conflicts(pg_conflicts))
+        return name, country_code, gateway_port, xui_inbound_port, inbound_tags, pg_inbound_tags, enabled
 
     @app.route("/locations/new", methods=["GET", "POST"])
     @login_required
@@ -309,7 +432,7 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form()
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled = validate_location_form()
                 slug = f"{cc.lower()}-{secrets.token_hex(3)}"
                 password = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
                 create_location({
@@ -318,20 +441,20 @@ def make_app() -> Flask:
                     "ss_method": "2022-blake3-aes-128-gcm", "ss_password": encrypt_secret(password),
                     "inbound_tags": inbound_tags, "enabled": enabled,
                 })
+                set_pasarguard_tor_tags(slug, pg_tags)
                 apply_runtime()
-                try:
-                    stats = sync_locations(list_locations(), decrypt_secret)
-                    flash(
-                        f"لوکیشن ساخته شد؛ Inbound اختصاصی 3x-ui و Outbound/Route همگام شدند "
-                        f"(ساخته‌شده: {stats['created']}، بروزشده: {stats['updated']}).",
-                        "success",
-                    )
-                except Exception as exc:
-                    flash(f"لوکیشن ساخته شد، ولی Sync با 3x-ui ناموفق بود: {exc}", "warning")
+                results = sync_all_panels(list_locations(), decrypt_secret)
+                flash_sync_results(results, "لوکیشن ساخته شد و Routeها Reconcile شدند.")
                 return redirect(url_for("index"))
             except (ValueError, sqlite3.IntegrityError, RuntimeError) as exc:
                 flash(str(exc), "danger")
-        return render_template("location_form.html", location=None, inbounds=available_inbounds())
+        return render_template(
+            "location_form.html",
+            location=None,
+            inbounds=available_xui_inbounds(),
+            pasarguard_inbounds=available_pasarguard_inbounds(),
+            pasarguard_tags=[],
+        )
 
     @app.route("/locations/<int:location_id>/edit", methods=["GET", "POST"])
     @login_required
@@ -342,26 +465,26 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, xui_inbound_port, inbound_tags, enabled = validate_location_form(location_id)
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled = validate_location_form(location_id)
                 update_location(location_id, {
                     **location, "name": name, "country_code": cc, "gateway_port": gateway_port,
                     "xui_inbound_port": xui_inbound_port, "inbound_tags": inbound_tags, "enabled": enabled,
                 })
+                set_pasarguard_tor_tags(str(location["slug"]), pg_tags)
                 apply_runtime()
-                try:
-                    stats = sync_locations(list_locations(), decrypt_secret)
-                    flash(
-                        f"لوکیشن به‌روزرسانی شد؛ Inbound/Outbound 3x-ui نیز Reconcile شد "
-                        f"(ساخته‌شده: {stats['created']}، بروزشده: {stats['updated']}، حذف‌شده: {stats['removed']}).",
-                        "success",
-                    )
-                except Exception as exc:
-                    flash(f"لوکیشن ذخیره شد، ولی Sync ناموفق بود: {exc}", "warning")
+                results = sync_all_panels(list_locations(), decrypt_secret)
+                flash_sync_results(results, "لوکیشن به‌روزرسانی شد و Routeها Reconcile شدند.")
                 return redirect(url_for("index"))
             except (ValueError, sqlite3.IntegrityError, RuntimeError) as exc:
                 flash(str(exc), "danger")
                 location = get_location(location_id)
-        return render_template("location_form.html", location=location, inbounds=available_inbounds())
+        return render_template(
+            "location_form.html",
+            location=location,
+            inbounds=available_xui_inbounds(),
+            pasarguard_inbounds=available_pasarguard_inbounds(),
+            pasarguard_tags=pasarguard_tor_tags(str(location["slug"])),
+        )
 
     @app.post("/locations/<int:location_id>/delete")
     @login_required
@@ -370,15 +493,12 @@ def make_app() -> Flask:
         location = get_location(location_id)
         if not location:
             return ("Not found", 404)
+        delete_pasarguard_tor_tags(str(location["slug"]))
         delete_location(location_id)
         try:
             apply_runtime()
-            stats = sync_locations(list_locations(), decrypt_secret)
-            flash(
-                f"لوکیشن حذف شد و Inbound/Outbound/Route مدیریت‌شده از 3x-ui پاک شد "
-                f"(حذف‌شده: {stats['removed']}).",
-                "success",
-            )
+            results = sync_all_panels(list_locations(), decrypt_secret)
+            flash_sync_results(results, "لوکیشن حذف شد و Routeهای مدیریت‌شده پاک شدند.")
         except Exception as exc:
             flash(f"لوکیشن حذف شد، ولی اعمال نهایی خطا داشت: {exc}", "warning")
         return redirect(url_for("index"))
@@ -410,11 +530,8 @@ def make_app() -> Flask:
         validate_csrf(request.form.get("_csrf"))
         try:
             apply_runtime()
-            stats = sync_locations(list_locations(), decrypt_secret)
-            flash(
-                f"Tor و 3x-ui با موفقیت Reconcile شدند. Inbound: +{stats['created']} / ~{stats['updated']} / -{stats['removed']}.",
-                "success",
-            )
+            results = sync_all_panels(list_locations(), decrypt_secret)
+            flash_sync_results(results, "Tor، Tunnel و پنل‌ها Reconcile شدند.")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("index"))

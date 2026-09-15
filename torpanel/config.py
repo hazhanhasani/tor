@@ -33,6 +33,14 @@ HELPER_CMD = os.getenv(
     "sudo -n /opt/tor-location-manager/venv/bin/python -m torpanel.helper apply",
 )
 
+UPDATE_REPO = os.getenv("TORPANEL_UPDATE_REPO", "hazhanhasani/tor")
+VERSION_FILE = Path(os.getenv("TORPANEL_VERSION_FILE", "/opt/tor-location-manager/VERSION"))
+UPDATE_STATE_PATH = Path(os.getenv("TORPANEL_UPDATE_STATE_PATH", str(BASE_DIR / "update-state.json")))
+UPDATER_CMD = os.getenv(
+    "TORPANEL_UPDATER_CMD",
+    "sudo -n /usr/bin/systemd-run --unit=tor-location-manager-update --collect --property=Type=exec /usr/local/sbin/tor-location-manager-update",
+)
+
 PANEL_BIND = os.getenv("TORPANEL_BIND", "0.0.0.0")
 PANEL_PORT = int(os.getenv("TORPANEL_PORT", "8787"))
 ADMIN_USERNAME = os.getenv("TORPANEL_ADMIN_USERNAME", "admin")

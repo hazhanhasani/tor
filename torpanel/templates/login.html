@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}ورود | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <div class="eyebrow">TOR + 3X-UI</div><h1>ورود به مدیریت لوکیشن‌ها</h1>
+  <p class="muted">مدیریت خروجی‌های مستقل Tor و همگام‌سازی خودکار با Xray.</p>
+  <form method="post" action="{{ url_for('login_post') }}" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>نام کاربری<input name="username" autocomplete="username" required></label>
+    <label>رمز عبور<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">ورود</button>
+  </form>
+</section>
+{% endblock %}

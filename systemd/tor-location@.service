@@ -1,0 +1,20 @@
+[Unit]
+Description=Tor country instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debian-tor
+Group=debian-tor
+ExecStart=/usr/bin/tor -f /etc/tor-location-manager/instances/%i/torrc
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tor-location-manager/tor/%i
+
+[Install]
+WantedBy=multi-user.target

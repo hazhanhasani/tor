@@ -34,6 +34,9 @@ HELPER_CMD = os.getenv(
 )
 
 UPDATE_REPO = os.getenv("TORPANEL_UPDATE_REPO", "hazhanhasani/tor")
+GITHUB_API_BASE = os.getenv("TORPANEL_GITHUB_API_BASE", "https://api.github.com").rstrip("/")
+RELEASE_MIRROR_BASE = os.getenv("TORPANEL_RELEASE_MIRROR_BASE", "").rstrip("/")
+DOWNLOAD_PROXY = os.getenv("TORPANEL_DOWNLOAD_PROXY", "").strip()
 VERSION_FILE = Path(os.getenv("TORPANEL_VERSION_FILE", "/opt/tor-location-manager/VERSION"))
 UPDATE_STATE_PATH = Path(os.getenv("TORPANEL_UPDATE_STATE_PATH", str(BASE_DIR / "update-state.json")))
 UPDATER_CMD = os.getenv(

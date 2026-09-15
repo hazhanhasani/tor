@@ -16,7 +16,10 @@
     <div class="workspace">
       {% include 'components/topbar.html' %}
       <main class="content" id="mainContent">
-        <div class="toast-stack" aria-live="polite" aria-atomic="true">
+  {% else %}
+      <main class="auth-shell" id="mainContent">
+  {% endif %}
+        <div class="toast-stack {{ 'auth-toasts' if not session.get('authenticated') else '' }}" aria-live="polite" aria-atomic="true">
           {% with messages = get_flashed_messages(with_categories=true) %}
             {% for category, message in messages %}
               <div class="toast {{ category }}" role="status"><span class="toast-dot"></span><div>{{ message }}</div><button type="button" class="toast-close" data-toast-close aria-label="بستن">×</button></div>
@@ -25,17 +28,9 @@
         </div>
         {% block content %}{% endblock %}
       </main>
+  {% if session.get('authenticated') %}
     </div>
   </div>
-  {% else %}
-  <main class="auth-shell">
-    <div class="toast-stack auth-toasts" aria-live="polite">
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% for category, message in messages %}<div class="toast {{ category }}" role="status"><span class="toast-dot"></span><div>{{ message }}</div><button type="button" class="toast-close" data-toast-close aria-label="بستن">×</button></div>{% endfor %}
-      {% endwith %}
-    </div>
-    {% block auth_content %}{% block legacy_content %}{% endblock %}{% endblock %}
-  </main>
   {% endif %}
 </body>
 </html>

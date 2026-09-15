@@ -5,11 +5,19 @@ import shlex
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
-from .db import get_setting, get_tunnel_link, list_tunnel_nodes, set_setting, update_tunnel_link
-from .security import validate_csrf
+from .db import get_setting, get_tunnel_link, list_locations, list_tunnel_links, set_setting, update_tunnel_link
+from .panel_sync import pasarguard_inbounds, sync_all_panels, xui_inbounds
+from .routing_state import (
+    delete_tunnel_panel_tags,
+    explicit_route_conflicts,
+    set_tunnel_panel_tags,
+    tunnel_panel_tags,
+)
+from .security import decrypt_secret, validate_csrf
 from .tunnels import (
+    AGENT_VERSION,
     TunnelError,
     authenticate_node,
     create_link,
@@ -59,6 +67,14 @@ def _node_command(controller: str, token: str, name: str) -> str:
     )
 
 
+def _upgrade_command(controller: str) -> str:
+    allow_http = " --allow-http" if controller.startswith("http://") else ""
+    return (
+        f"curl -fsSL {shlex.quote(controller + '/api/tunnels/bootstrap.sh')} | sudo bash -s -- "
+        f"--panel {shlex.quote(controller)} --upgrade{allow_http}"
+    )
+
+
 def _mask_host(value: str) -> str:
     value = (value or "").strip()
     if not value:
@@ -75,6 +91,21 @@ def _mask_host(value: str) -> str:
         return value[:3] + "***" + value[-3:]
 
 
+def _provider_inbounds() -> tuple[list[dict], list[dict], list[str]]:
+    xui_rows: list[dict] = []
+    pg_rows: list[dict] = []
+    errors: list[str] = []
+    try:
+        xui_rows = xui_inbounds()
+    except Exception as exc:
+        errors.append(f"3x-ui: {exc}")
+    try:
+        pg_rows = pasarguard_inbounds()
+    except Exception as exc:
+        errors.append(f"PasarGuard: {exc}")
+    return xui_rows, pg_rows, errors
+
+
 def _detail_context(link_uuid: str, tokens: dict[str, str] | None = None):
     link = get_tunnel_link(link_uuid)
     if not link:
@@ -87,23 +118,41 @@ def _detail_context(link_uuid: str, tokens: dict[str, str] | None = None):
         commands["iran"] = _node_command(controller, tokens["iran"], f"Iran · {link['name']}")
     if tokens.get("foreign"):
         commands["foreign"] = _node_command(controller, tokens["foreign"], f"Foreign · {link['name']}")
+    xui_rows, pg_rows, provider_errors = _provider_inbounds()
     return {
         "link": view,
         "controller_url": controller,
         "commands": commands,
         "masked_iran_host": _mask_host((view.get("iran_node") or {}).get("advertise_host") or (view.get("iran_node") or {}).get("observed_ip") or ""),
         "masked_foreign_host": _mask_host((view.get("foreign_node") or {}).get("advertise_host") or (view.get("foreign_node") or {}).get("observed_ip") or ""),
+        "xui_inbounds": xui_rows,
+        "pasarguard_inbounds": pg_rows,
+        "xui_selected": tunnel_panel_tags(link_uuid, "xui"),
+        "pasarguard_selected": tunnel_panel_tags(link_uuid, "pasarguard"),
+        "provider_errors": provider_errors,
+        "agent_version": AGENT_VERSION,
+        "upgrade_command": _upgrade_command(controller),
     }
+
+
+def _format_conflicts(conflicts: dict[str, list[str]]) -> str:
+    return "؛ ".join(f"{owner}: {', '.join(tags)}" for owner, tags in conflicts.items())
+
+
+def _flash_sync(results: dict[str, dict]) -> None:
+    labels = {"xui": "3x-ui", "pasarguard": "PasarGuard"}
+    synced = [labels[k] for k, row in results.items() if row.get("ok") is True]
+    if synced:
+        flash("Routing Tunnel روی " + ", ".join(synced) + " همگام شد.", "success")
+    for key, row in results.items():
+        if row.get("ok") is False:
+            flash(f"Sync {labels[key]} ناموفق بود: {row.get('error')}", "warning")
 
 
 @bp.get("/tunnels")
 def tunnel_index():
     data = dashboard_data()
-    return render_template(
-        "tunnels.html",
-        **data,
-        controller_url=_controller_url(),
-    )
+    return render_template("tunnels.html", **data, controller_url=_controller_url())
 
 
 @bp.post("/tunnels/controller-url")
@@ -135,9 +184,7 @@ def tunnel_new():
         return render_template("tunnel_detail.html", **_detail_context(link["uuid"], tokens))
     except (TunnelError, ValueError) as exc:
         data = dashboard_data()
-        return render_template(
-            "tunnels.html", **data, controller_url=_controller_url(), tunnel_error=str(exc)
-        ), 400
+        return render_template("tunnels.html", **data, controller_url=_controller_url(), tunnel_error=str(exc)), 400
 
 
 @bp.get("/tunnels/<link_uuid>")
@@ -177,17 +224,49 @@ def tunnel_mode(link_uuid: str):
     return redirect(url_for("tunnels.tunnel_detail", link_uuid=link_uuid))
 
 
+@bp.post("/tunnels/<link_uuid>/routing")
+def tunnel_routing(link_uuid: str):
+    validate_csrf(request.form.get("_csrf"))
+    link = get_tunnel_link(link_uuid)
+    if not link:
+        return ("Not found", 404)
+    xui_tags = [x for x in request.form.getlist("xui_inbound_tags") if x]
+    pg_tags = [x for x in request.form.getlist("pasarguard_inbound_tags") if x]
+    locations = list_locations()
+    links = list_tunnel_links()
+    xui_conflicts = explicit_route_conflicts(
+        "xui", xui_tags, locations=locations, tunnel_links=links, exclude_link_uuid=link_uuid
+    )
+    if xui_conflicts:
+        return render_template(
+            "error_inline.html", message="Inboundهای 3x-ui قبلاً Route شده‌اند: " + _format_conflicts(xui_conflicts)
+        ), 400
+    pg_conflicts = explicit_route_conflicts(
+        "pasarguard", pg_tags, locations=locations, tunnel_links=links, exclude_link_uuid=link_uuid
+    )
+    if pg_conflicts:
+        return render_template(
+            "error_inline.html", message="Inboundهای PasarGuard قبلاً Route شده‌اند: " + _format_conflicts(pg_conflicts)
+        ), 400
+    set_tunnel_panel_tags(link_uuid, "xui", xui_tags)
+    set_tunnel_panel_tags(link_uuid, "pasarguard", pg_tags)
+    results = sync_all_panels(locations, decrypt_secret)
+    _flash_sync(results)
+    return redirect(url_for("tunnels.tunnel_detail", link_uuid=link_uuid))
+
+
 @bp.post("/tunnels/<link_uuid>/delete")
 def tunnel_delete(link_uuid: str):
     validate_csrf(request.form.get("_csrf"))
     try:
+        delete_tunnel_panel_tags(link_uuid)
         delete_link(link_uuid)
+        _flash_sync(sync_all_panels(list_locations(), decrypt_secret))
     except TunnelError:
         return ("Not found", 404)
     return redirect(url_for("tunnels.tunnel_index"))
 
 
-# Node bootstrap and authenticated agent control plane ------------------------
 @bp.get("/api/tunnels/bootstrap.sh")
 def tunnel_bootstrap_script():
     response = send_file(SCRIPTS / "tlm-node-bootstrap.sh", mimetype="text/x-shellscript", conditional=True)

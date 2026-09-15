@@ -1,51 +1,64 @@
 {% extends "base.html" %}
-{% block title %}بروزرسانی سیستم{% endblock %}
+{% from 'components/icons.html' import icon %}
+{% block title %}مرکز بروزرسانی | Tor Location Manager{% endblock %}
 {% block content %}
 <section class="page-head">
-  <div><div class="eyebrow">RELEASE UPDATE CENTER</div><h1>بروزرسانی سیستم</h1><p class="muted">نسخه‌ها فقط از GitHub Release رسمی پروژه دریافت و پس از بررسی SHA-256 نصب می‌شوند.</p></div>
-  <form method="post" action="{{ url_for('updates_check') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">بررسی نسخه جدید</button></form>
+  <div><div class="eyebrow">RELEASE UPDATE CENTER</div><h1>مرکز بروزرسانی</h1><p>Release رسمی، بررسی صحت، Backup و Rollback از یک صفحه مدیریت می‌شوند.</p></div>
+  <form method="post" action="{{ url_for('updates_check') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} بررسی نسخه جدید</button></form>
 </section>
 
-<div class="grid">
-  <section class="card">
-    <div class="country">INSTALLED</div><h2>نسخه فعلی</h2>
-    <div class="version-number">v{{ current_version }}</div>
-    <p class="muted">تنظیمات، دیتابیس، لوکیشن‌ها و کلیدهای 3x-ui هنگام ارتقا حفظ می‌شوند.</p>
-  </section>
-  <section class="card">
-    <div class="country">LATEST RELEASE</div><h2>آخرین نسخه رسمی</h2>
-    {% if release %}
-      <div class="version-number">{{ release.tag }}</div>
-      <p>{{ release.name }}</p>
-      {% if release.update_available %}<span class="status ok">نسخه جدید موجود است</span>{% else %}<span class="status off">بروز است</span>{% endif %}
-      {% if not release.package_ready %}<div class="alert warning compact">Release منتشر شده اما Asset و checksum استاندارد آن کامل نیست.</div>{% endif %}
-    {% else %}<p class="muted">اطلاعات Release در دسترس نیست.</p>{% endif %}
-  </section>
+<div class="update-hero">
+  <section class="version-card"><div class="version-label">INSTALLED VERSION</div><div class="version-number">v{{ current_version }}</div><span class="status ok">نسخه نصب‌شده</span><p class="muted" style="font-size:11px;margin-bottom:0">دیتابیس، Credentialها و تنظیمات 3x-ui هنگام Update حفظ می‌شوند.</p></section>
+  <section class="version-card"><div class="version-label">LATEST RELEASE</div>{% if release %}<div class="version-number">{{ release.tag }}</div><span class="status {{ 'ok' if release.update_available else 'off' }}">{{ 'نسخه جدید موجود است' if release.update_available else 'سیستم بروز است' }}</span><p class="muted" style="font-size:11px;margin-bottom:0">{{ release.name }}</p>{% else %}<div class="version-number">—</div><span class="status warn">نامشخص</span><p class="muted" style="font-size:11px;margin-bottom:0">اطلاعات Release در دسترس نیست.</p>{% endif %}</section>
 </div>
 
-{% if release and release.update_available and release.package_ready %}
-<section class="panel update-panel">
-  <h2>نصب {{ release.tag }}</h2>
-  <p>قبل از نصب از برنامه، دیتابیس، سرویس‌ها و تنظیمات Backup گرفته می‌شود. اگر Health Check نسخه جدید شکست بخورد، سیستم خودکار Rollback می‌کند.</p>
-  {% if release.notes %}<details><summary>Release notes</summary><pre class="release-notes">{{ release.notes }}</pre></details>{% endif %}
-  <form method="post" action="{{ url_for('updates_install') }}" onsubmit="return confirm('بروزرسانی {{ release.tag }} نصب شود؟ پنل هنگام نصب برای مدت کوتاهی Restart خواهد شد.')">
+{% if release and release.update_available %}
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>آماده‌سازی نصب {{ release.tag }}</h2><p>فرآیند امن بروزرسانی با Backup و Health Check</p></div>{% if release.package_ready %}<span class="status ok">Package Verified</span>{% else %}<span class="status bad">Assets ناقص</span>{% endif %}</div>
+  <div class="progress-steps"><span class="progress-step done"></span><span class="progress-step done"></span><span class="progress-step active"></span><span class="progress-step"></span><span class="progress-step"></span><span class="progress-step"></span></div>
+  <div class="meta-grid">
+    <div class="meta-item"><span>Package</span><strong>{{ 'آماده' if release.package_ready else 'ناقص' }}</strong></div>
+    <div class="meta-item"><span>شبکه محدود</span><strong>{{ 'پشتیبانی می‌شود' if release.restricted_network_ready else 'نامشخص' }}</strong></div>
+    <div class="meta-item"><span>Release Mirror</span><strong>{{ 'تنظیم شده' if release.mirror_configured else 'GitHub/API' }}</strong></div>
+    <div class="meta-item"><span>تاریخ انتشار</span><strong class="ltr">{{ release.published_at or '—' }}</strong></div>
+  </div>
+  {% if release.notes %}<details style="margin-top:14px"><summary>مشاهده Release Notes</summary><pre class="release-notes">{{ release.notes }}</pre></details>{% endif %}
+  {% if release.package_ready %}
+  <form method="post" action="{{ url_for('updates_install') }}" style="margin-top:16px" onsubmit="return confirm('نسخه {{ release.tag }} نصب شود؟ قبل از نصب Backup گرفته می‌شود و در صورت شکست Health Check، Rollback خودکار انجام خواهد شد.')">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="tag" value="{{ release.tag }}">
-    <button class="button primary" type="submit">Backup و نصب بروزرسانی</button>
+    <button class="button primary" type="submit">{{ icon('update') }} Backup و نصب {{ release.tag }}</button>
   </form>
+  {% else %}<div class="callout warning" style="margin-top:14px"><strong>Release قابل نصب نیست:</strong> بسته نصب یا digest/checksum معتبر پیدا نشد.</div>{% endif %}
 </section>
 {% endif %}
 
-<section class="panel">
-  <h2>وضعیت آخرین عملیات</h2>
-  <dl>
-    <div><dt>وضعیت</dt><dd>{{ state.status or 'idle' }}</dd></div>
-    {% if state.target %}<div><dt>نسخه هدف</dt><dd>{{ state.target }}</dd></div>{% endif %}
-    {% if state.message %}<div><dt>پیام</dt><dd>{{ state.message }}</dd></div>{% endif %}
-    {% if state.backup_path %}<div><dt>Backup</dt><dd>{{ state.backup_path }}</dd></div>{% endif %}
-    {% if state.updated_at %}<div><dt>آخرین تغییر</dt><dd>{{ state.updated_at }}</dd></div>{% endif %}
-  </dl>
-  {% if log_tail %}<details><summary>نمایش لاگ بروزرسانی</summary><pre class="update-log">{{ log_tail }}</pre></details>{% endif %}
-</section>
+<div class="section-grid" style="margin-top:16px">
+  <section class="panel">
+    <div class="section-title"><div><h2>آخرین عملیات</h2><p>وضعیت updater مستقل systemd</p></div><span class="status {{ 'ok' if state.status == 'success' else 'warn' if state.status == 'running' else 'bad' if state.status in ['failed','rolled_back'] else 'off' }}">{{ state.status or 'idle' }}</span></div>
+    <div class="review-list">
+      <div class="review-row"><span>وضعیت</span><strong>{{ state.status or 'idle' }}</strong></div>
+      {% if state.target %}<div class="review-row"><span>نسخه هدف</span><strong>{{ state.target }}</strong></div>{% endif %}
+      {% if state.message %}<div class="review-row"><span>پیام</span><strong style="direction:rtl;text-align:right">{{ state.message }}</strong></div>{% endif %}
+      {% if state.backup_path %}<div class="review-row"><span>Backup</span><strong>{{ state.backup_path }}</strong></div>{% endif %}
+      {% if state.updated_at %}<div class="review-row"><span>آخرین تغییر</span><strong>{{ state.updated_at }}</strong></div>{% endif %}
+    </div>
+  </section>
 
-<div class="note"><strong>روش انتشار:</strong> نسخه جدید را در <code>VERSION</code> و <code>pyproject.toml</code> هماهنگ کنید و Tag مثل <code>v1.2.0</code> منتشر کنید. Workflow پروژه بسته Release و SHA-256 را خودکار می‌سازد.</div>
+  <aside class="panel">
+    <div class="section-title"><div><h2>سیاست ایمنی</h2><p>مراحل Update</p></div></div>
+    <div class="info-list">
+      <div class="info-row"><span class="mini-icon">{{ icon('shield') }}</span><div><strong>Verification</strong><small>SHA-256 یا digest رسمی GitHub قبل از نصب بررسی می‌شود.</small></div></div>
+      <div class="info-row"><span class="mini-icon">{{ icon('server') }}</span><div><strong>Backup</strong><small>کد، DB، panel.env و سرویس‌ها قبل از تغییر ذخیره می‌شوند.</small></div></div>
+      <div class="info-row"><span class="mini-icon">{{ icon('pulse') }}</span><div><strong>Health Check</strong><small>نسخه جدید باید بعد از Restart پاسخ سالم بدهد.</small></div></div>
+      <div class="info-row"><span class="mini-icon">{{ icon('sync') }}</span><div><strong>Rollback</strong><small>اگر Health Check شکست بخورد نسخه قبلی بازگردانده می‌شود.</small></div></div>
+    </div>
+  </aside>
+</div>
+
+{% if log_tail %}
+<section class="panel" style="margin-top:16px">
+  <div class="log-toolbar"><div><strong style="font-size:13px">لاگ بروزرسانی</strong><div class="muted" style="font-size:10px">آخرین رویدادهای updater</div></div><a class="button small" href="{{ url_for('logs', source='update') }}">{{ icon('terminal') }} مرکز لاگ</a></div>
+  <pre class="update-log">{{ log_tail }}</pre>
+</section>
+{% endif %}
 {% endblock %}

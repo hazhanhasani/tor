@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 from pathlib import Path
 
@@ -51,3 +52,44 @@ def test_obfs4_transport_normalizes_bridge_lines(monkeypatch):
     assert lines[1] == "ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"
     assert lines[2].startswith("Bridge obfs4 192.0.2.10:443")
     assert lines[3].startswith("Bridge obfs4 192.0.2.11:8443")
+
+
+def test_torrc_binds_location_traffic_to_tunnel_source(monkeypatch):
+    monkeypatch.setattr(helper, "get_setting", lambda key, default="": "direct" if key == "tor_transport_mode" else default)
+    loc = {"slug": "de-test", "socks_port": 19050, "country_code": "DE"}
+    text = helper.torrc_for(loc, "10.203.0.1")
+    assert "OutboundBindAddress 10.203.0.1" in text
+    assert "ExitNodes {de}" in text
+
+
+def test_local_tunnel_source_uses_matching_iran_agent(monkeypatch, tmp_path):
+    agent = tmp_path / "agent.json"
+    agent.write_text(json.dumps({"node_uuid": "iran-node-1"}), encoding="utf-8")
+    monkeypatch.setattr(helper, "NODE_AGENT_CONFIG", agent)
+    settings = {"tor_auto_tunnel_all_locations": "1", "tor_tunnel_link_uuid": ""}
+    monkeypatch.setattr(helper, "get_setting", lambda key, default="": settings.get(key, default))
+    monkeypatch.setattr(helper, "list_tunnel_links", lambda: [{
+        "uuid": "link-1", "enabled": 1, "iran_node_uuid": "iran-node-1",
+        "foreign_node_uuid": "foreign-node-1", "iran_overlay_ip": "10.203.0.1",
+        "active_transport": "direct",
+    }])
+    assert helper.local_tor_tunnel_source_ip() == "10.203.0.1"
+
+
+def test_unmatched_or_foreign_agent_does_not_bind_tor(monkeypatch, tmp_path):
+    agent = tmp_path / "agent.json"
+    agent.write_text(json.dumps({"node_uuid": "foreign-node-1"}), encoding="utf-8")
+    monkeypatch.setattr(helper, "NODE_AGENT_CONFIG", agent)
+    monkeypatch.setattr(helper, "get_setting", lambda key, default="": "1" if key == "tor_auto_tunnel_all_locations" else default)
+    monkeypatch.setattr(helper, "list_tunnel_links", lambda: [{
+        "uuid": "link-1", "enabled": 1, "iran_node_uuid": "iran-node-1",
+        "foreign_node_uuid": "foreign-node-1", "iran_overlay_ip": "10.203.0.1",
+        "active_transport": "direct",
+    }])
+    assert helper.local_tor_tunnel_source_ip() == ""
+
+
+def test_atomic_write_is_idempotent(tmp_path):
+    path = tmp_path / "sample.conf"
+    assert helper.atomic_write(path, "same\n") is True
+    assert helper.atomic_write(path, "same\n") is False

@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 CONFIG_DIR = Path("/etc/tor-location-node")
 STATE_DIR = Path("/var/lib/tor-location-node")
 AGENT_CONFIG = CONFIG_DIR / "agent.json"

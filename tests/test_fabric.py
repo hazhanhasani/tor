@@ -63,3 +63,28 @@ def test_inventory_ignores_disabled_locations_and_invalid_ports():
 
     assert result["location_count"] == 1
     assert result["ports"] == []
+
+
+def test_inventory_never_forwards_reserved_tunnel_or_panel_ports():
+    result = build_location_port_inventory(
+        [{
+            "slug": "de-conflict",
+            "name": "Germany",
+            "country_code": "de",
+            "enabled": True,
+            "socks_port": 19050,
+            "gateway_port": 22000,
+            "xui_inbound_port": 8787,
+            "inbound_tags": ["safe", "wg-conflict"],
+        }],
+        xui_rows=[
+            {"tag": "safe", "port": 443},
+            {"tag": "wg-conflict", "port": 52000},
+        ],
+        reserved_ports={8787, 22000, 40000, 52000},
+    )
+
+    assert result["ports"] == [443]
+    assert result["blocked_ports"] == [8787, 22000, 52000]
+    assert result["locations"][0]["ports"] == [443]
+    assert result["locations"][0]["blocked_ports"] == [8787, 22000, 52000]

@@ -15,6 +15,7 @@ from .routing_state import (
     set_tunnel_panel_tags,
     tunnel_panel_tags,
 )
+from .runtime import apply_runtime
 from .security import decrypt_secret, validate_csrf
 from .tunnels import (
     AGENT_VERSION,
@@ -261,6 +262,10 @@ def tunnel_delete(link_uuid: str):
     try:
         delete_tunnel_panel_tags(link_uuid)
         delete_link(link_uuid)
+        try:
+            apply_runtime()
+        except Exception as exc:
+            flash(f"Tunnel حذف شد، ولی بازنشانی خودکار مسیر Tor خطا داشت: {exc}", "warning")
         _flash_sync(sync_all_panels(list_locations(), decrypt_secret))
     except TunnelError:
         return ("Not found", 404)
@@ -316,6 +321,13 @@ def tunnel_api_heartbeat(node_uuid: str):
     try:
         node = authenticate_node(node_uuid, _bearer())
         heartbeat(node, payload, request.remote_addr or "")
-        return jsonify({"ok": True})
+        tor_sync: dict[str, object] = {"ok": None, "skipped": True}
+        if node.get("role") == "iran" and list_locations():
+            try:
+                apply_runtime()
+                tor_sync = {"ok": True}
+            except Exception as exc:
+                tor_sync = {"ok": False, "error": str(exc)[:500]}
+        return jsonify({"ok": True, "tor_sync": tor_sync})
     except TunnelError as exc:
         return jsonify({"error": str(exc)}), 401

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tor-location-manager"
-version = "1.6.4"
+version = "1.7.0"
 description = "Multi-panel Tor egress and hybrid Iran/foreign tunnel manager with 3x-ui and PasarGuard routing"
 requires-python = ">=3.10"
 dependencies = [

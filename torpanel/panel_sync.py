@@ -16,6 +16,26 @@ def xui_configured() -> bool:
     return bool(cfg.base_url.strip("/") and cfg.api_token)
 
 
+def _hybrid_freedom_outbound(tag: str, source_ip: str) -> dict[str, Any]:
+    """Build a current Xray freedom outbound bound to the tunnel source IP.
+
+    Xray 26.x expects Freedom DNS strategy in streamSettings.sockopt, not in
+    the freedom protocol settings object. Keeping this in one builder prevents
+    3x-ui and PasarGuard from drifting to different schemas.
+    """
+    return {
+        "tag": tag,
+        "protocol": "freedom",
+        "settings": {},
+        "sendThrough": source_ip,
+        "streamSettings": {
+            "sockopt": {
+                "domainStrategy": "UseIPv4",
+            }
+        },
+    }
+
+
 def build_xui_hybrid_config(original: dict[str, Any], tunnel_links: list[dict[str, Any]]) -> dict[str, Any]:
     config = copy.deepcopy(original)
     outbounds = config.setdefault("outbounds", [])
@@ -49,12 +69,7 @@ def build_xui_hybrid_config(original: dict[str, Any], tunnel_links: list[dict[st
         if not source_ip:
             continue
         tag = XUI_TUNNEL_PREFIX + link_uuid.replace("-", "")[:12]
-        outbounds.append({
-            "tag": tag,
-            "protocol": "freedom",
-            "settings": {"domainStrategy": "UseIPv4"},
-            "sendThrough": source_ip,
-        })
+        outbounds.append(_hybrid_freedom_outbound(tag, source_ip))
         managed_rules.append({"type": "field", "inboundTag": tags, "outboundTag": tag})
 
     api_rules: list[dict[str, Any]] = []

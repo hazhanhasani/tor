@@ -21,7 +21,7 @@ jobs:
       - name: Compile
         run: |
           python -m compileall -q torpanel
-          python -m py_compile scripts/tlm-node-agent.py
+          python -m py_compile scripts/tlm-node-agent.py scripts/tlm-port-fabric.py
       - name: Shell syntax
         run: bash -n install.sh bootstrap.sh scripts/tor-location-manager-update scripts/install-xray scripts/tlm-node-bootstrap.sh
       - name: Test

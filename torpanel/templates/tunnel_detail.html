@@ -74,13 +74,37 @@
 </section>
 
 <section class="panel" style="margin-top:16px">
-  <div class="section-title"><div><h2>Routing پنل‌ها از این سرور خارج</h2><p>Inboundهای انتخابی در 3x-ui یا PasarGuard با <code>sendThrough={{ link.iran_overlay_ip }}</code> وارد Policy Route این Tunnel می‌شوند.</p></div><span class="status {{ 'ok' if link.ready else 'warn' }}">{{ 'آماده Routing' if link.ready else 'منتظر Nodeها' }}</span></div>
+  <div class="section-title">
+    <div><h2>Port Fabric خودکار لوکیشن‌های Tor</h2><p>اگر Tor Location Manager روی سرور خارج نصب باشد، همه لوکیشن‌های فعال و تمام پورت‌های متعلق به آن‌ها بدون انتخاب دستی از ایران Tunnel می‌شوند.</p></div>
+    <span class="status {{ 'ok' if foreign_tor_inventory.installed else 'warn' }}">{{ 'فعال' if foreign_tor_inventory.installed else 'در انتظار شناسایی' }}</span>
+  </div>
+  {% if foreign_tor_inventory.installed %}
+    <div class="metric-grid compact" style="margin-bottom:14px">
+      <div class="metric-card"><span>نسخه Tor Manager</span><strong>{{ foreign_tor_inventory.version or '—' }}</strong></div>
+      <div class="metric-card"><span>لوکیشن فعال</span><strong>{{ foreign_tor_inventory.location_count or 0 }}</strong></div>
+      <div class="metric-card"><span>پورت Tunnel شده</span><strong>{{ foreign_tor_inventory.port_count or 0 }}</strong></div>
+    </div>
+    {% if foreign_tor_inventory.locations %}
+      <div class="checks">
+      {% for item in foreign_tor_inventory.locations %}
+        <div class="check row"><span><b>{{ item.country_code }} · {{ item.name }}</b><small>{{ item.slug }} · پورت‌ها: {{ item.ports|join(', ') if item.ports else 'بدون پورت عمومی' }}</small></span></div>
+      {% endfor %}
+      </div>
+    {% endif %}
+    <div class="callout success" style="margin-top:12px"><strong>Automatic all-port mode:</strong> پورت Gateway، Inbound مدیریت‌شده 3x-ui و Inboundهای 3x-ui/PasarGuard متصل به هر Location به‌صورت خودکار شناسایی می‌شوند. TCP و UDP همان شماره پورت از Iran Edge با DNAT/SNAT از Overlay به سرور خارج می‌روند. SOCKS داخلی Tor عمداً روی 127.0.0.1 باقی می‌ماند و عمومی نمی‌شود.</div>
+  {% else %}
+    <div class="callout warning">هنوز Inventory لوکیشن‌های Tor از سرور خارج دریافت نشده است. بعد از ارتقای Node، سرویس <code>tor-location-port-fabric</code> نصب می‌شود و در اولین Sync لوکیشن‌ها و پورت‌ها را خودکار اعلام می‌کند. اگر Tor Manager روی این سرور نصب نیست، این بخش غیرفعال باقی می‌ماند.</div>
+  {% endif %}
+</section>
+
+<section class="panel" style="margin-top:16px">
+  <div class="section-title"><div><h2>Routing اضافی پنل‌ها از این سرور خارج</h2><p>این بخش فقط برای Inboundهای اضافه‌ای است که عضو Locationهای Tor نیستند. Port Fabric لوکیشن‌های Tor بالا به‌صورت خودکار عمل می‌کند.</p></div><span class="status {{ 'ok' if link.ready else 'warn' }}">{{ 'آماده Routing' if link.ready else 'منتظر Nodeها' }}</span></div>
   {% for error in provider_errors %}<div class="callout warning" style="margin-bottom:10px">{{ error }}</div>{% endfor %}
   <form method="post" action="{{ url_for('tunnels.tunnel_routing', link_uuid=link.uuid) }}" class="stack">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
     <div class="section-grid">
       <div class="form-section">
-        <div class="form-section-title"><span class="form-section-number">3X</span><div><h3>3x-ui</h3><p>Inboundهای دستی که باید از Foreign Egress این Tunnel خارج شوند.</p></div></div>
+        <div class="form-section-title"><span class="form-section-number">3X</span><div><h3>3x-ui</h3><p>Inboundهای دستی اضافه که باید از Foreign Egress این Tunnel خارج شوند.</p></div></div>
         {% if xui_inbounds %}
           <div class="checks">
           {% for item in xui_inbounds %}
@@ -91,7 +115,7 @@
       </div>
 
       <div class="form-section">
-        <div class="form-section-title"><span class="form-section-number">PG</span><div><h3>PasarGuard</h3><p>Inboundهای Core انتخابی که باید از همین Tunnel خارج شوند.</p></div></div>
+        <div class="form-section-title"><span class="form-section-number">PG</span><div><h3>PasarGuard</h3><p>Inboundهای Core اضافه که باید از همین Tunnel خارج شوند.</p></div></div>
         {% if pasarguard_inbounds %}
           <div class="checks">
           {% for item in pasarguard_inbounds %}
@@ -101,7 +125,7 @@
         {% else %}<div class="callout">PasarGuard تنظیم نشده یا Core انتخابی Inbound قابل خواندن ندارد.</div>{% endif %}
       </div>
     </div>
-    <div class="callout warning"><strong>محل اجرای Xray مهم است:</strong> Xray مربوط به 3x-ui یا PasarGuard باید روی همین Iran Edge اجرا شود؛ چون IP مبدأ Overlay فقط روی این سرور وجود دارد. در PasarGuard یک Core مشترک روی چند Node ناهمسان را به Tunnel Route وصل نکنید مگر Overlay یکسان روی همه آن Nodeها برقرار باشد.</div>
+    <div class="callout warning"><strong>محل اجرای Xray مهم است:</strong> Routing دستی این بخش برای Xray روی Iran Edge است. برای Locationهای Tor که روی سرور خارج نصب‌اند از Port Fabric خودکار بالا استفاده می‌شود و نیازی به انتخاب دستی آن‌ها نیست.</div>
     <div class="actions"><button class="button primary" type="submit">{{ icon('sync') }} ذخیره و Sync Routing</button></div>
   </form>
 </section>
@@ -124,7 +148,7 @@
 </div>
 
 <section class="panel danger-zone" style="margin-top:16px">
-  <div class="section-title"><div><h2>حذف اتصال</h2><p>بعد از حذف Link، Routeهای 3x-ui/PasarGuard پاک می‌شوند و Agentها در Poll بعدی Interface، Policy Route و سرویس‌های متعلق به آن را پاک می‌کنند.</p></div></div>
+  <div class="section-title"><div><h2>حذف اتصال</h2><p>بعد از حذف Link، Routeهای 3x-ui/PasarGuard و Port Fabric پاک می‌شوند و Agentها در Poll بعدی Interface، Policy Route و سرویس‌های متعلق به آن را پاک می‌کنند.</p></div></div>
   <form method="post" action="{{ url_for('tunnels.tunnel_delete', link_uuid=link.uuid) }}" onsubmit="return confirm('این Tunnel حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button danger" type="submit">{{ icon('trash') }} حذف Tunnel</button></form>
 </section>
 {% endblock %}

@@ -20,6 +20,7 @@ from .db import (
     get_tunnel_node,
     get_tunnel_node_by_token_hash,
     links_for_tunnel_node,
+    list_locations,
     list_tunnel_links,
     list_tunnel_nodes,
     replace_tunnel_enrollment,
@@ -29,7 +30,7 @@ from .db import (
 )
 from .security import decrypt_secret, encrypt_secret
 
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 WG_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$")
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)$")
 
@@ -82,8 +83,28 @@ def _validate_wg_public_key(value: str) -> str:
     return value
 
 
+def _location_reserved_ports() -> set[int]:
+    reserved: set[int] = set()
+    for location in list_locations():
+        for key in ("gateway_port", "xui_inbound_port"):
+            try:
+                port = int(location.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                reserved.add(port)
+    try:
+        panel_port = int(get_setting("panel_public_port", "8787") or 8787)
+    except (TypeError, ValueError):
+        panel_port = 8787
+    if 1 <= panel_port <= 65535:
+        reserved.add(panel_port)
+    return reserved
+
+
 def _allocate_resources() -> dict[str, Any]:
     used = tunnel_resource_sets()
+    reserved_ports = _location_reserved_ports()
     overlay_cidr = get_setting("tunnel_overlay_cidr", "10.203.0.0/16") or "10.203.0.0/16"
     try:
         network = ipaddress.ip_network(overlay_cidr, strict=True)
@@ -102,6 +123,8 @@ def _allocate_resources() -> dict[str, Any]:
         if wg_port > 59999 or frp_control > 29999 or frp_proxy > 47999:
             break
         if subnet_text in used["subnets"]:
+            continue
+        if wg_port in reserved_ports or frp_control in reserved_ports or frp_proxy in reserved_ports:
             continue
         if wg_port in used["wg_ports"] or frp_control in used["frp_control_ports"] or frp_proxy in used["frp_proxy_ports"]:
             continue

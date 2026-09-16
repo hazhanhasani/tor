@@ -58,6 +58,7 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 AGENT="$TMP/tlm-node-agent.py"
+FABRIC="$TMP/tlm-port-fabric.py"
 curl_args=(--fail --location --silent --show-error --connect-timeout 10 --max-time 120 --retry 4 --retry-all-errors)
 if [[ -n "${TLM_DOWNLOAD_PROXY:-}" ]]; then
   curl_args+=(--proxy "$TLM_DOWNLOAD_PROXY")
@@ -70,6 +71,10 @@ echo "Downloading node agent from controller..."
 curl "${curl_args[@]}" "$PANEL/api/tunnels/agent.py" -o "$AGENT"
 chmod 0700 "$AGENT"
 
+echo "Downloading automatic Tor port-fabric sidecar..."
+curl "${curl_args[@]}" "$PANEL/api/tunnels/port-fabric.py" -o "$FABRIC"
+chmod 0700 "$FABRIC"
+
 if [[ $UPGRADE -eq 1 ]]; then
   args=(upgrade --panel "$PANEL")
 else
@@ -81,6 +86,29 @@ fi
 
 python3 "$AGENT" "${args[@]}"
 
+install -m 0755 "$FABRIC" /usr/local/sbin/tlm-port-fabric
+cat > /etc/systemd/system/tor-location-port-fabric.service <<'EOF'
+[Unit]
+Description=Tor Location automatic Iran-Foreign port fabric
+After=network-online.target tor-location-node-agent.service
+Wants=network-online.target tor-location-node-agent.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/tlm-port-fabric run
+Restart=always
+RestartSec=5
+NoNewPrivileges=false
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable tor-location-port-fabric.service >/dev/null
+systemctl restart tor-location-port-fabric.service
+
 echo
 if [[ $UPGRADE -eq 1 ]]; then
   echo "Node agent upgrade completed."
@@ -88,4 +116,6 @@ else
   echo "Node installation completed."
 fi
 echo "Status: systemctl status tor-location-node-agent --no-pager -l"
+echo "Fabric: systemctl status tor-location-port-fabric --no-pager -l"
 echo "Logs:   journalctl -u tor-location-node-agent -f"
+echo "Fabric logs: journalctl -u tor-location-port-fabric -f"

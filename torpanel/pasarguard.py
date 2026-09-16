@@ -199,6 +199,20 @@ def _insert_managed_rules(routing: dict[str, Any], managed_rules: list[dict[str,
     routing["rules"] = api_rules + managed_rules + rest
 
 
+def _hybrid_freedom_outbound(tag: str, source_ip: str) -> dict[str, Any]:
+    return {
+        "tag": tag,
+        "protocol": "freedom",
+        "settings": {},
+        "sendThrough": source_ip,
+        "streamSettings": {
+            "sockopt": {
+                "domainStrategy": "UseIPv4",
+            }
+        },
+    }
+
+
 def build_synced_core_config(
     original: dict[str, Any],
     locations: list[dict[str, Any]],
@@ -252,12 +266,7 @@ def build_synced_core_config(
         if not source_ip:
             continue
         tag = TUNNEL_OUTBOUND_PREFIX + link_uuid.replace("-", "")[:12]
-        outbounds.append({
-            "tag": tag,
-            "protocol": "freedom",
-            "settings": {"domainStrategy": "UseIPv4"},
-            "sendThrough": source_ip,
-        })
+        outbounds.append(_hybrid_freedom_outbound(tag, source_ip))
         managed_rules.append({"type": "field", "inboundTag": tags, "outboundTag": tag})
 
     _insert_managed_rules(routing, managed_rules)

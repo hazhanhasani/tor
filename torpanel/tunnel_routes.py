@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import shlex
 import time
 from pathlib import Path
@@ -16,7 +17,6 @@ from .db import (
     list_tunnel_links,
     set_setting,
     update_tunnel_link,
-    update_tunnel_node_seen,
 )
 from .panel_sync import pasarguard_inbounds, sync_all_panels, xui_inbounds
 from .routing_state import (
@@ -117,12 +117,26 @@ def _provider_inbounds() -> tuple[list[dict], list[dict], list[str]]:
     return xui_rows, pg_rows, errors
 
 
+def _fabric_setting_key(node_uuid: str) -> str:
+    return f"tunnel_port_fabric_inventory:{str(node_uuid)}"
+
+
+def _saved_inventory(node_uuid: str) -> dict:
+    raw = get_setting(_fabric_setting_key(node_uuid), "{}")
+    try:
+        value = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    inventory = value.get("inventory")
+    return inventory if isinstance(inventory, dict) else {}
+
+
 def _foreign_inventory(view: dict) -> dict:
     node = view.get("foreign_node") or {}
-    state = node.get("state") if isinstance(node.get("state"), dict) else {}
-    fabric = state.get("port_fabric") if isinstance(state.get("port_fabric"), dict) else {}
-    inventory = fabric.get("inventory") if isinstance(fabric.get("inventory"), dict) else {}
-    return inventory
+    uuid = str(node.get("uuid") or "")
+    return _saved_inventory(uuid) if uuid else {}
 
 
 def _detail_context(link_uuid: str, tokens: dict[str, str] | None = None):
@@ -227,9 +241,7 @@ def _port_fabric_config(node: dict) -> dict:
             foreign = get_tunnel_node(str(link.get("foreign_node_uuid") or "")) if link.get("foreign_node_uuid") else None
             if not foreign or not foreign.get("enabled"):
                 continue
-            state = foreign.get("state") if isinstance(foreign.get("state"), dict) else {}
-            fabric = state.get("port_fabric") if isinstance(state.get("port_fabric"), dict) else {}
-            inventory = _sanitize_inventory(fabric.get("inventory"))
+            inventory = _sanitize_inventory(_saved_inventory(str(foreign.get("uuid") or "")))
             ports = inventory.get("ports") if inventory.get("installed") else []
             short = str(link.get("uuid") or "").replace("-", "")[:8]
             links.append({
@@ -459,15 +471,9 @@ def tunnel_api_port_fabric_inventory(node_uuid: str):
     try:
         node = authenticate_node(node_uuid, _bearer())
         inventory = _sanitize_inventory(payload.get("inventory"))
-        current_state = dict(node.get("state") or {}) if isinstance(node.get("state"), dict) else {}
-        current_state["port_fabric"] = {
-            "inventory": inventory,
-            "updated_at": int(time.time()),
-        }
-        update_tunnel_node_seen(
-            node_uuid,
-            observed_ip=request.remote_addr or node.get("observed_ip", ""),
-            state=current_state,
+        set_setting(
+            _fabric_setting_key(node_uuid),
+            json.dumps({"inventory": inventory, "updated_at": int(time.time())}, ensure_ascii=False, separators=(",", ":")),
         )
         return jsonify({
             "ok": True,

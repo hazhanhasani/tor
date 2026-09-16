@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import ipaddress
 import shlex
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
-from .db import get_setting, get_tunnel_link, list_locations, list_tunnel_links, set_setting, update_tunnel_link
+from .db import (
+    get_setting,
+    get_tunnel_link,
+    get_tunnel_node,
+    list_locations,
+    list_tunnel_links,
+    set_setting,
+    update_tunnel_link,
+    update_tunnel_node_seen,
+)
 from .panel_sync import pasarguard_inbounds, sync_all_panels, xui_inbounds
 from .routing_state import (
     delete_tunnel_panel_tags,
@@ -107,6 +117,14 @@ def _provider_inbounds() -> tuple[list[dict], list[dict], list[str]]:
     return xui_rows, pg_rows, errors
 
 
+def _foreign_inventory(view: dict) -> dict:
+    node = view.get("foreign_node") or {}
+    state = node.get("state") if isinstance(node.get("state"), dict) else {}
+    fabric = state.get("port_fabric") if isinstance(state.get("port_fabric"), dict) else {}
+    inventory = fabric.get("inventory") if isinstance(fabric.get("inventory"), dict) else {}
+    return inventory
+
+
 def _detail_context(link_uuid: str, tokens: dict[str, str] | None = None):
     link = get_tunnel_link(link_uuid)
     if not link:
@@ -133,6 +151,7 @@ def _detail_context(link_uuid: str, tokens: dict[str, str] | None = None):
         "provider_errors": provider_errors,
         "agent_version": AGENT_VERSION,
         "upgrade_command": _upgrade_command(controller),
+        "foreign_tor_inventory": _foreign_inventory(view),
     }
 
 
@@ -148,6 +167,89 @@ def _flash_sync(results: dict[str, dict]) -> None:
     for key, row in results.items():
         if row.get("ok") is False:
             flash(f"Sync {labels[key]} ناموفق بود: {row.get('error')}", "warning")
+
+
+def _sanitize_inventory(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {"installed": False, "locations": [], "ports": [], "location_count": 0, "port_count": 0}
+    installed = bool(value.get("installed"))
+    version = str(value.get("version") or "")[:32]
+    locations: list[dict] = []
+    global_ports: set[int] = set()
+    raw_locations = value.get("locations") if isinstance(value.get("locations"), list) else []
+    for raw in raw_locations[:512]:
+        if not isinstance(raw, dict):
+            continue
+        ports: set[int] = set()
+        raw_ports = raw.get("ports") if isinstance(raw.get("ports"), list) else []
+        for item in raw_ports:
+            try:
+                port = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= port <= 65535:
+                ports.add(port)
+                global_ports.add(port)
+        locations.append({
+            "slug": str(raw.get("slug") or "")[:96],
+            "name": str(raw.get("name") or "")[:160],
+            "country_code": str(raw.get("country_code") or "")[:8].upper(),
+            "ports": sorted(ports),
+        })
+    raw_global_ports = value.get("ports") if isinstance(value.get("ports"), list) else []
+    for item in raw_global_ports:
+        try:
+            port = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            global_ports.add(port)
+    raw_errors = value.get("errors") if isinstance(value.get("errors"), list) else []
+    errors = [str(x)[:500] for x in raw_errors[:20]]
+    return {
+        "installed": installed,
+        "version": version,
+        "locations": locations,
+        "ports": sorted(global_ports),
+        "location_count": len(locations),
+        "port_count": len(global_ports),
+        "errors": errors,
+    }
+
+
+def _port_fabric_config(node: dict) -> dict:
+    links: list[dict] = []
+    role = str(node.get("role") or "")
+    if role == "iran":
+        for link in list_tunnel_links():
+            if not link.get("enabled") or str(link.get("iran_node_uuid") or "") != str(node.get("uuid") or ""):
+                continue
+            foreign = get_tunnel_node(str(link.get("foreign_node_uuid") or "")) if link.get("foreign_node_uuid") else None
+            if not foreign or not foreign.get("enabled"):
+                continue
+            state = foreign.get("state") if isinstance(foreign.get("state"), dict) else {}
+            fabric = state.get("port_fabric") if isinstance(state.get("port_fabric"), dict) else {}
+            inventory = _sanitize_inventory(fabric.get("inventory"))
+            ports = inventory.get("ports") if inventory.get("installed") else []
+            short = str(link.get("uuid") or "").replace("-", "")[:8]
+            links.append({
+                "uuid": str(link.get("uuid") or ""),
+                "name": str(link.get("name") or ""),
+                "ready": bool(ports and foreign),
+                "interface": f"tlm{short[:7]}",
+                "iran_ip": str(link.get("iran_overlay_ip") or ""),
+                "foreign_ip": str(link.get("foreign_overlay_ip") or ""),
+                "ports": ports,
+                "locations": inventory.get("locations") or [],
+                "foreign_tor_version": inventory.get("version") or "",
+                "active_transport": str(link.get("active_transport") or "pending"),
+            })
+    return {
+        "schema": 1,
+        "poll_interval": 15,
+        "node": {"uuid": node.get("uuid"), "name": node.get("name"), "role": role},
+        "links": links,
+    }
 
 
 @bp.get("/tunnels")
@@ -286,6 +388,13 @@ def tunnel_agent_script():
     return response
 
 
+@bp.get("/api/tunnels/port-fabric.py")
+def tunnel_port_fabric_script():
+    response = send_file(SCRIPTS / "tlm-port-fabric.py", mimetype="text/x-python", conditional=True)
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
 @bp.post("/api/tunnels/enroll")
 def tunnel_api_enroll():
     payload = request.get_json(silent=True)
@@ -329,5 +438,41 @@ def tunnel_api_heartbeat(node_uuid: str):
             except Exception as exc:
                 tor_sync = {"ok": False, "error": str(exc)[:500]}
         return jsonify({"ok": True, "tor_sync": tor_sync})
+    except TunnelError as exc:
+        return jsonify({"error": str(exc)}), 401
+
+
+@bp.get("/api/tunnels/nodes/<node_uuid>/port-fabric")
+def tunnel_api_port_fabric(node_uuid: str):
+    try:
+        node = authenticate_node(node_uuid, _bearer())
+        return jsonify(_port_fabric_config(node))
+    except TunnelError as exc:
+        return jsonify({"error": str(exc)}), 401
+
+
+@bp.post("/api/tunnels/nodes/<node_uuid>/port-fabric/inventory")
+def tunnel_api_port_fabric_inventory(node_uuid: str):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid-json"}), 400
+    try:
+        node = authenticate_node(node_uuid, _bearer())
+        inventory = _sanitize_inventory(payload.get("inventory"))
+        current_state = dict(node.get("state") or {}) if isinstance(node.get("state"), dict) else {}
+        current_state["port_fabric"] = {
+            "inventory": inventory,
+            "updated_at": int(time.time()),
+        }
+        update_tunnel_node_seen(
+            node_uuid,
+            observed_ip=request.remote_addr or node.get("observed_ip", ""),
+            state=current_state,
+        )
+        return jsonify({
+            "ok": True,
+            "port_count": inventory.get("port_count", 0),
+            "location_count": inventory.get("location_count", 0),
+        })
     except TunnelError as exc:
         return jsonify({"error": str(exc)}), 401

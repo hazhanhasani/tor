@@ -4,6 +4,13 @@ import torpanel.pasarguard as pg
 import torpanel.panel_sync as panel_sync
 
 
+def _assert_current_freedom_schema(outbound):
+    assert outbound["protocol"] == "freedom"
+    assert outbound["settings"] == {}
+    assert outbound["streamSettings"]["sockopt"]["domainStrategy"] == "UseIPv4"
+    assert "domainStrategy" not in outbound["settings"]
+
+
 def test_pasarguard_builds_tor_and_tunnel_routes(monkeypatch):
     monkeypatch.setattr(pg, "pasarguard_tor_tags", lambda slug: ["pg-in"] if slug == "de-a" else [])
     monkeypatch.setattr(pg, "tunnel_panel_tags", lambda uuid, provider: ["pg-tunnel"] if provider == "pasarguard" else [])
@@ -25,6 +32,7 @@ def test_pasarguard_builds_tor_and_tunnel_routes(monkeypatch):
     assert "tlm-pg-tor-de-a" in by_tag
     tunnel_tag = next(tag for tag in by_tag if tag.startswith("tlm-pg-tunnel-"))
     assert by_tag[tunnel_tag]["sendThrough"] == "10.203.0.1"
+    _assert_current_freedom_schema(by_tag[tunnel_tag])
     rules = config["routing"]["rules"]
     assert any(row.get("inboundTag") == ["pg-in"] and row.get("outboundTag") == "tlm-pg-tor-de-a" for row in rules)
     assert any(row.get("inboundTag") == ["pg-tunnel"] and row.get("outboundTag") == tunnel_tag for row in rules)
@@ -43,7 +51,7 @@ def test_xui_builds_hybrid_source_route(monkeypatch):
     links = [{"uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "enabled": True, "iran_overlay_ip": "10.203.0.5"}]
     config = build_xui_hybrid_config(original, links)
     tunnel = next(row for row in config["outbounds"] if row["tag"].startswith("tlm-tunnel-"))
-    assert tunnel["protocol"] == "freedom"
     assert tunnel["sendThrough"] == "10.203.0.5"
+    _assert_current_freedom_schema(tunnel)
     assert config["routing"]["rules"][0]["outboundTag"] == "api"
     assert any(row.get("inboundTag") == ["in-a"] and row.get("outboundTag") == tunnel["tag"] for row in config["routing"]["rules"])

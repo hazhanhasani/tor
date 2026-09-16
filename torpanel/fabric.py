@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .db import list_locations
+from .config import PANEL_PORT
+from .db import list_locations, list_tunnel_links
 from .panel_sync import pasarguard_inbounds, xui_inbounds
 from .routing_state import pasarguard_tor_tags
 
@@ -19,21 +20,35 @@ def _port(value: Any) -> int:
     return port if 1 <= port <= 65535 else 0
 
 
+def tunnel_infrastructure_ports() -> set[int]:
+    reserved = {_port(PANEL_PORT)}
+    for link in list_tunnel_links():
+        for key in ("foreign_wg_port", "iran_frp_control_port", "iran_frp_proxy_port"):
+            port = _port(link.get(key))
+            if port:
+                reserved.add(port)
+    return {port for port in reserved if port}
+
+
 def build_location_port_inventory(
     locations: list[dict[str, Any]],
     *,
     xui_rows: list[dict[str, Any]] | None = None,
     pasarguard_rows: list[dict[str, Any]] | None = None,
     pasarguard_tags_by_slug: dict[str, list[str]] | None = None,
+    reserved_ports: set[int] | None = None,
 ) -> dict[str, Any]:
     """Return every externally reachable port owned by enabled Tor locations.
 
     Internal Tor SOCKS ports are intentionally excluded because they are bound to
-    loopback and must never be exposed by the Iran↔foreign port fabric.
+    loopback and must never be exposed by the Iran↔foreign port fabric. Tunnel
+    control/WireGuard ports and the panel port are also excluded so a Location can
+    never steal the management path through an nftables DNAT rule.
     """
     xui_rows = xui_rows or []
     pasarguard_rows = pasarguard_rows or []
     pasarguard_tags_by_slug = pasarguard_tags_by_slug or {}
+    reserved_ports = {_port(value) for value in (reserved_ports or set()) if _port(value)}
 
     xui_port_by_tag = {
         str(row.get("tag") or ""): _port(row.get("port"))
@@ -47,6 +62,7 @@ def build_location_port_inventory(
     }
 
     all_ports: set[int] = set()
+    blocked_ports: set[int] = set()
     result_locations: list[dict[str, Any]] = []
     for location in locations:
         if not location.get("enabled"):
@@ -57,17 +73,23 @@ def build_location_port_inventory(
 
         ports: set[int] = set()
         sources: dict[int, set[str]] = {}
+        blocked_sources: dict[int, set[str]] = {}
 
         def add(value: Any, source: str) -> None:
             port = _port(value)
             if not port:
+                return
+            if port in reserved_ports:
+                blocked_ports.add(port)
+                blocked_sources.setdefault(port, set()).add(source)
                 return
             ports.add(port)
             all_ports.add(port)
             sources.setdefault(port, set()).add(source)
 
         # Every Tor location has a public gateway and, when 3x-ui is configured,
-        # a managed inbound. Those are always part of the automatic tunnel fabric.
+        # a managed inbound. Those are always part of the automatic tunnel fabric
+        # unless their port collides with tunnel/control infrastructure.
         add(location.get("gateway_port"), "tor-gateway")
         add(location.get("xui_inbound_port"), "managed-3x-ui")
 
@@ -89,11 +111,13 @@ def build_location_port_inventory(
             "port_sources": {
                 str(port): sorted(values) for port, values in sorted(sources.items())
             },
+            "blocked_ports": sorted(blocked_sources),
         })
 
     return {
         "locations": result_locations,
         "ports": sorted(all_ports),
+        "blocked_ports": sorted(blocked_ports),
         "location_count": len(result_locations),
         "port_count": len(all_ports),
     }
@@ -121,7 +145,13 @@ def location_port_inventory() -> dict[str, Any]:
         xui_rows=xui_rows,
         pasarguard_rows=pg_rows,
         pasarguard_tags_by_slug=pg_tags,
+        reserved_ports=tunnel_infrastructure_ports(),
     )
+    if inventory.get("blocked_ports"):
+        errors.append(
+            "Port Fabric skipped ports reserved by the panel/tunnel infrastructure: "
+            + ", ".join(str(port) for port in inventory["blocked_ports"])
+        )
     version = "unknown"
     try:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip() or "unknown"

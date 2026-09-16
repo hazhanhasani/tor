@@ -7,3 +7,4 @@ def test_wsgi_does_not_double_register_tunnel_blueprint():
     app_source = (root / "torpanel" / "app.py").read_text(encoding="utf-8")
     assert "register_blueprint" not in wsgi_source
     assert app_source.count("app.register_blueprint(tunnel_bp)") == 1
+    assert wsgi_source.count("register_password_recovery(app)") == 1

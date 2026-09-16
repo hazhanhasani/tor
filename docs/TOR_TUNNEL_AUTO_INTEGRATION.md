@@ -1,13 +1,15 @@
 # Automatic Tor Location → Hybrid Tunnel Integration
 
-وقتی Tor Location Manager و Iran Node Agent روی همان سرور ایران نصب باشند، تمام Locationهای فعال Tor به‌صورت خودکار از Hybrid Tunnel عبور می‌کنند.
+این قابلیت دو حالت نصب رایج را بدون انتخاب دستی Location پوشش می‌دهد. هدف این است که وقتی Tor Location Manager روی یکی از Nodeهای Tunnel نصب است، همه Locationهای فعال فعلی و آینده به‌صورت خودکار با Hybrid Tunnel هماهنگ شوند.
 
-## مسیر داده
+## حالت A — Tor Manager روی سرور ایران
+
+در این حالت خود Processهای Tor روی Iran Edge اجرا می‌شوند. Helper محلی `/etc/tor-location-node/agent.json` را می‌خواند و اگر Node محلی سمت `iran` یک Tunnel آماده باشد، `iran_overlay_ip` همان Link را برای تمام Tor instanceهای فعال به‌عنوان Source قرار می‌دهد.
 
 ```text
 Client
   ↓
-هر پورت مدیریت‌شده Location (3x-ui managed inbound / SS2022 gateway)
+3x-ui / PasarGuard / Tor Gateway روی ایران
   ↓
 Tor instance همان Location
   ↓  ExitNodes {country}
@@ -24,13 +26,7 @@ Tor network
 Exit کشور انتخاب‌شده
 ```
 
-## نحوه تشخیص خودکار
-
-Helper ریشه‌ای پروژه فایل `/etc/tor-location-node/agent.json` را می‌خواند. اگر `node_uuid` محلی دقیقاً با `iran_node_uuid` یک Tunnel فعال و دارای Foreign Node برابر باشد، `iran_overlay_ip` همان Link به عنوان Source تمام Tor instanceهای مدیریت‌شده انتخاب می‌شود.
-
-اگر Controller روی سرور دیگری باشد یا Agent محلی نقش Foreign داشته باشد، این رفتار فعال نمی‌شود و Tor به Route معمول Host دست نمی‌زند.
-
-برای هر Location فعال، torrc به شکل زیر تکمیل می‌شود:
+برای هر Location فعال، `torrc` به شکل زیر تکمیل می‌شود:
 
 ```text
 SocksPort 127.0.0.1:<socks_port>
@@ -39,28 +35,72 @@ ExitNodes {de}
 StrictNodes 1
 ```
 
-بنابراین انتخاب کشور Tor حفظ می‌شود؛ Tunnel فقط مسیر شبکه بین Iran Edge و Foreign Egress را عوض می‌کند.
+در نتیجه ساخت Location جدید نیاز به تنظیم Tunnel جداگانه ندارد. Reconcile بعدی آن را خودکار وارد همان مسیر می‌کند.
 
-## همه Locationها و همه پورت‌های مدیریت‌شده
+## حالت B — Tor Manager روی سرور خارج
 
-این اتصال در سطح خروجی خود Tor انجام می‌شود، نه فقط یک Inbound خاص. در نتیجه تمام Locationهای فعلی و Locationهایی که بعداً ساخته می‌شوند به‌صورت خودکار مشمول Tunnel می‌شوند. تمام ورودی‌های TCP مدیریت‌شده‌ای که نهایتاً به Tor instance همان Location می‌رسند از همین مسیر عبور می‌کنند و نیازی به انتخاب دستی `torloc-in-*` در بخش Routing Tunnel نیست.
+اگر Tor Location Manager روی Foreign Node نصب شده باشد، Node یک Inventory از همه Locationهای فعال می‌سازد و فقط Portهای عمومی متعلق به آن‌ها را به Controller اعلام می‌کند:
 
-Gateway لوکیشن‌های Tor عمداً TCP-only است و UDP را Block می‌کند. بنابراین «تمام پورت‌ها» در این بخش به معنی تمام پورت‌ها و جریان‌های TCP مدیریت‌شده توسط Locationهای Tor است؛ Tor برای arbitrary UDP proxy طراحی نشده است.
+- `gateway_port` هر Location
+- Inbound مدیریت‌شده 3x-ui (`xui_inbound_port`)
+- Inboundهای دستی 3x-ui که به همان Location وصل شده‌اند
+- Inboundهای PasarGuard که به همان Location وصل شده‌اند
 
-## Fail-closed
+`SOCKS` داخلی Tor عمداً در Inventory قرار نمی‌گیرد، چون روی `127.0.0.1` است و نباید عمومی شود.
 
-Iran Node Agent برای `iran_overlay_ip` یک `ip rule` و جدول Route اختصاصی می‌سازد. جدول دارای مسیر Tunnel با metric پایین و `blackhole default` به عنوان fallback است. چون Tor خروجی خود را به همان Overlay IP Bind می‌کند، در صورت قطع Tunnel آن ترافیک نباید به Default Route عمومی ایران سقوط کند.
+Iran Edge هر 15 ثانیه Desired State را Poll می‌کند و با nftables برای همه Portهای Inventory یک Port Fabric می‌سازد:
 
-## Reconcile خودکار
+```text
+User → Iran_Public_IP:SAME_PORT
+             ↓ DNAT
+       foreign_overlay_ip:SAME_PORT
+             ↓
+       Hybrid Tunnel
+             ↓
+       Foreign service / Tor Location
+             ↓
+SNAT source = iran_overlay_ip
+             ↓
+Reply returns through the same Tunnel
+```
 
-Iran Agent تقریباً هر 15 ثانیه heartbeat می‌فرستد. Controller پس از heartbeat ایران، Helper را idempotent اجرا می‌کند. Helper فقط زمانی Tor instance را Restart می‌کند که torrc آن تغییر کرده باشد یا سرویس خاموش باشد؛ در نتیجه Poll عادی باعث Restart مداوم Locationها نمی‌شود.
+برای هر Port، TCP و UDP همان شماره به‌صورت خودکار Mirror می‌شوند. اگر سرویس مقصد فقط TCP باشد، طبیعتاً UDP پاسخی نخواهد داشت؛ Port Fabric خودش Protocol سرویس را تغییر نمی‌دهد.
 
-حذف Tunnel نیز Helper را اجرا می‌کند تا `OutboundBindAddress` مدیریت‌شده از Locationها حذف شود و Route عادی Host بازگردد.
+## چرا SNAT لازم است؟
 
-## چند Tunnel
+DNAT به تنهایی کافی نیست. بدون SNAT، سرویس Foreign ممکن است پاسخ را از Default Route عمومی خود برگرداند و مسیر نامتقارن یا IP leak ایجاد شود. Port Fabric هنگام ورود به Interface Tunnel، Source را به `iran_overlay_ip` تبدیل می‌کند تا پاسخ به‌صورت قطعی از Overlay برگردد.
 
-اگر چند Tunnel به همان Iran Node وصل باشند، سیستم ابتدا Link سالم (`direct` یا `reverse`) را به‌صورت deterministic انتخاب می‌کند. برای انتخاب صریح یک Link می‌توان مقدار تنظیم داخلی `tor_tunnel_link_uuid` را روی UUID موردنظر قرار داد. قابلیت خودکار با `tor_auto_tunnel_all_locations=1` فعال است.
+## Fail-closed و Leak Protection
+
+در حالت A، Iran Node Agent برای `iran_overlay_ip` یک `ip rule` و جدول Route اختصاصی می‌سازد. جدول دارای Route Tunnel و `blackhole default` است؛ بنابراین ترافیک Bindشده به Overlay در صورت قطع Tunnel نباید روی Default Route عمومی ایران fallback کند.
+
+در حالت B، Client فقط IP ایران را می‌بیند و Port Fabric مقصد را به `foreign_overlay_ip` می‌برد. IP عمومی Foreign Node در کانفیگ End-user قرار نمی‌گیرد.
+
+این طراحی IP endpoint واقعی را از ISP، دیتاسنتر یا Peer شبکه «نامرئی» نمی‌کند؛ هدف آن حذف IP خارج از کانفیگ کاربران، جلوگیری از listenerهای غیرضروری و جلوگیری از fallback ناخواسته است.
+
+## تشخیص و Reconcile خودکار
+
+- Foreign Port Fabric تقریباً هر 60 ثانیه Inventory Tor را دوباره می‌خواند.
+- Iran Port Fabric تقریباً هر 15 ثانیه Desired State را اعمال می‌کند.
+- Location جدید یا تغییر Port در Sync بعدی بدون ساخت Link جدید وارد Fabric می‌شود.
+- حذف Location باعث حذف Port آن در Reconcile بعدی می‌شود.
+- حذف Tunnel باعث Cleanup Interface، FRP، Policy Route و Port Fabric مربوط به Link می‌شود.
+
+## چند Tunnel و تداخل Port
+
+یک Public Port روی یک Iran Edge نمی‌تواند همزمان به دو Foreign Node متفاوت تعلق داشته باشد. اگر دو Foreign Link همان Port را Advertise کنند، سیستم آن را Conflict اعلام می‌کند و به‌صورت مخفی مقصد را عوض نمی‌کند.
+
+هنگام ساخت Tunnel جدید، allocator پورت‌های عمومی Locationهای موجود را رزرو می‌داند تا WireGuard/FRP با Gateway یا managed inboundهای Tor روی همان Host برخورد نکنند.
+
+## ارتقای Nodeهای قدیمی
+
+Port Fabric از Agent نسل `1.3.0` به بعد جزو Bootstrap است. Nodeهای قدیمی در صفحه Tunnel با پیام Upgrade مشخص می‌شوند. اجرای دستور Upgrade همان Enrollment قبلی را حفظ می‌کند و علاوه بر Agent اصلی، سرویس زیر را نصب می‌کند:
+
+```bash
+systemctl status tor-location-port-fabric --no-pager -l
+journalctl -u tor-location-port-fabric -f
+```
 
 ## Routing دستی 3x-ui / PasarGuard
 
-Routing دستی Tunnel همچنان برای Inboundهای غیر-Tor باقی می‌ماند. Inboundهای مدیریت‌شده Tor نباید با Freedom Outbound مستقیم به Tunnel فرستاده شوند، چون آن کار مرحله Tor/ExitNodes را دور می‌زند. برای Locationهای Tor، مسیر درست همان `OutboundBindAddress` روی process Tor است.
+Routing دستی Tunnel همچنان برای Inboundهایی باقی می‌ماند که عضو Locationهای Tor نیستند. برای Locationهای Tor نیازی نیست Portها یکی‌یکی انتخاب شوند؛ Integration خودکار بر اساس محل نصب Tor Manager یکی از دو روش بالا را اعمال می‌کند.

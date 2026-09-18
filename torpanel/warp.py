@@ -10,6 +10,9 @@ DOMAIN_RE = re.compile(
 )
 
 
+WARP_COMPANION_DOMAINS = ("challenges.cloudflare.com",)
+
+
 class WarpAssistError(ValueError):
     pass
 
@@ -37,7 +40,12 @@ def normalize_warp_domains(raw: str | Iterable[str]) -> list[str]:
 
 
 def xray_domain_rules(domains: Iterable[str]) -> list[str]:
-    return [f"domain:{domain}" for domain in normalize_warp_domains(domains)]
+    normalized = normalize_warp_domains(domains)
+    if normalized:
+        for domain in WARP_COMPANION_DOMAINS:
+            if domain not in normalized:
+                normalized.append(domain)
+    return [f"domain:{domain}" for domain in normalized]
 
 
 def test_warp_proxy(port: int, timeout: int = 12) -> dict[str, str | bool]:

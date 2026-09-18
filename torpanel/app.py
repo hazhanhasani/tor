@@ -57,6 +57,7 @@ from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings as xui_current_settings, normalize_api_token
 from .xui_cdn import (
+    CDN_MANAGED_REMARK,
     CDN_MANAGED_TAG,
     CDNProfileError,
     managed_cdn_client_uri,
@@ -301,7 +302,9 @@ def make_app() -> Flask:
                 and not xui_warp_inbound_tags
                 and managed_inbound_mode == "cloudflare"
             ):
-                xui_warp_inbound_tags = [CDN_MANAGED_TAG]
+                xui_warp_inbound_tags = [
+                    get_setting("xui_cdn_runtime_tag", CDN_MANAGED_TAG) or CDN_MANAGED_TAG
+                ]
 
             if tor_transport_mode not in {"direct", "obfs4"}:
                 flash("حالت اتصال Tor معتبر نیست.", "danger")
@@ -389,22 +392,39 @@ def make_app() -> Flask:
                     xui_warp_status["registered"] = False
             except Exception as exc:
                 xui_warp_status["error"] = str(exc)
-        if (
-            get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
-            and not any(str(row.get("tag") or "") == CDN_MANAGED_TAG for row in xui_warp_available_inbounds)
-        ):
-            xui_warp_available_inbounds.insert(0, {
-                "id": None,
-                "tag": CDN_MANAGED_TAG,
-                "remark": "Cloudflare CDN مدیریت‌شده",
-                "protocol": "vless",
-                "port": int(get_setting("xui_cdn_port", "8443") or 8443),
-            })
-        if (
-            get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
-            and not xui_warp_inbound_tags
-        ):
-            xui_warp_inbound_tags = [CDN_MANAGED_TAG]
+        if get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare":
+            managed_cdn_row = next(
+                (
+                    row for row in xui_warp_available_inbounds
+                    if str(row.get("tag") or "") == CDN_MANAGED_TAG
+                    or str(row.get("remark") or "") == CDN_MANAGED_REMARK
+                ),
+                None,
+            )
+            runtime_cdn_tag = (
+                str((managed_cdn_row or {}).get("tag") or "")
+                or get_setting("xui_cdn_runtime_tag", CDN_MANAGED_TAG)
+                or CDN_MANAGED_TAG
+            )
+            if managed_cdn_row is None:
+                xui_warp_available_inbounds.insert(0, {
+                    "id": None,
+                    "tag": runtime_cdn_tag,
+                    "remark": "Cloudflare CDN مدیریت‌شده",
+                    "protocol": "vless",
+                    "port": int(get_setting("xui_cdn_port", "8443") or 8443),
+                })
+            if not xui_warp_inbound_tags:
+                xui_warp_inbound_tags = [runtime_cdn_tag]
+            else:
+                previous_runtime_tag = get_setting("xui_cdn_runtime_tag", "") or ""
+                replaceable = {CDN_MANAGED_TAG}
+                if previous_runtime_tag:
+                    replaceable.add(previous_runtime_tag)
+                xui_warp_inbound_tags = [
+                    runtime_cdn_tag if str(tag) in replaceable else str(tag)
+                    for tag in xui_warp_inbound_tags
+                ]
         return render_template(
             "settings.html",
             xui_base_url=get_setting("xui_base_url"),

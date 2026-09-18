@@ -44,6 +44,9 @@ Germany Tor exit
 
 - Web Panel فارسی و RTL
 - اتصال به 3x-ui با API Token رسمی
+- HTTPS مستقیم برای خود پنل با استفاده از همان Certificate/Key محلی 3x-ui
+- ورود با دامنه 3x-ui به‌جای IP، Secure Cookie، HSTS و محدودسازی Host
+- Sync خودکار تمدید Certificate 3x-ui با systemd timer
 - دریافت خودکار لیست Inboundهای 3x-ui
 - ساخت/ویرایش/حذف Location
 - Tor process مستقل برای هر کشور
@@ -73,7 +76,8 @@ Germany Tor exit
 - معماری amd64 یا arm64
 - دسترسی root
 - systemd
-- پورت Web Panel پیش‌فرض: `8787/tcp`
+- پورت Web Panel پیش‌فرض قبل از فعال‌سازی SSL: `8787/tcp`
+- بعد از فعال‌سازی SSL 3x-ui، یک پورت HTTPS جدا و سازگار با Cloudflare مثل `2096/tcp` برای پنل Tor
 - برای هر Location یک Gateway TCP port که باید بین سرور 3x-ui و سرور Tor قابل دسترس باشد
 - 3x-ui جدید با API Token و endpointهای `/panel/api/xray/*`
 
@@ -144,6 +148,46 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 
 بعد از Save، پروژه Tor instance و Xray Gateway را می‌سازد، config فعلی Xray را از 3x-ui می‌خواند، Outbound اختصاصی `torloc-<slug>` و Rule مبتنی بر `inboundTag` را اضافه می‌کند و آن را از endpoint رسمی `/panel/api/xray/update` اعمال می‌کند.
 
+## استفاده از SSL خود 3x-ui برای پنل Tor
+
+اگر 3x-ui و Tor Location Manager روی **همان سرور** نصب باشند، می‌توانید Web Panel این پروژه را بدون IP و با همان SSL خود 3x-ui باز کنید.
+
+از منوی **اتصال و شبکه → HTTPS خود پنل Tor با SSL 3x-ui** گزینه استفاده از SSL 3x-ui را فعال کنید و یک پورت HTTPS آزاد انتخاب کنید. دامنه از URL ذخیره‌شده 3x-ui خوانده می‌شود. پروژه از API رسمی 3x-ui مسیرهای `webCertFile` و `webKeyFile` را می‌گیرد، سپس سرویس privileged فقط روی همان سرور فایل‌های Certificate/Key را اعتبارسنجی و به مسیر محدود زیر Sync می‌کند:
+
+```text
+/etc/tor-location-manager/tls/panel.crt
+/etc/tor-location-manager/tls/panel.key
+```
+
+Private Key در دیتابیس یا UI ذخیره و نمایش داده نمی‌شود. Key کپی‌شده فقط برای گروه سرویس پنل خواندنی است.
+
+نمونه:
+
+```text
+3x-ui:               https://panel.example.com:2053
+Tor Location Manager: https://panel.example.com:2096
+```
+
+پورت‌های انتخابی HTTPS به پورت‌های قابل Proxy در Cloudflare محدود شده‌اند: `443, 2053, 2083, 2087, 2096, 8443`. سیستم قبل از فعال‌سازی تداخل پورت با 3x-ui، CDN Inbound، Gatewayهای Tor و Hybrid Tunnel را بررسی می‌کند.
+
+پس از فعال‌شدن SSL:
+
+- Session Cookie فقط روی HTTPS ارسال می‌شود.
+- HSTS، `X-Frame-Options` و `X-Content-Type-Options` فعال می‌شوند.
+- صفحات مدیریتی با Host/IP دیگر پاسخ مدیریتی نمی‌دهند.
+- Timer هر ۶ ساعت Certificate منبع 3x-ui را بررسی می‌کند و در صورت تمدید، نسخه جدید را Sync و سرویس پنل را Restart می‌کند.
+- Health Check و Updater هر دو حالت HTTP/HTTPS را تشخیص می‌دهند.
+
+اگر دامنه/SSL اشتباه تنظیم شد و پنل باز نشد، از SSH این Rollback اضطراری را اجرا کنید:
+
+```bash
+sudo /opt/tor-location-manager/venv/bin/python -m torpanel.helper panel-tls-disable
+```
+
+پنل دوباره روی `http://SERVER_IP:8787` بالا می‌آید.
+
+> این قابلیت برای استفاده مستقیم از فایل SSL نیاز دارد 3x-ui و Tor Location Manager روی یک Host باشند. اگر 3x-ui روی سرور دیگری باشد، فعال‌سازی متوقف می‌شود و تنظیم قبلی پنل حفظ می‌شود.
+
 ## بروزرسانی از داخل پنل
 
 در منوی **بروزرسانی** نسخه نصب‌شده و آخرین GitHub Release نمایش داده می‌شود. نصب از پنل فقط زمانی فعال می‌شود که Release دارای هر دو Asset زیر باشد:
@@ -207,11 +251,13 @@ journalctl -u tor-location-gateway -f
 journalctl -u tor-location-manager-update -f
 ```
 
-Health endpoint:
+Health endpoint قبل از SSL:
 
 ```text
 http://127.0.0.1:8787/healthz
 ```
+
+بعد از فعال‌سازی SSL، همان endpoint روی پورت HTTPS انتخاب‌شده سرو می‌شود و Health Check داخلی آن را با HTTPS بررسی می‌کند.
 
 ## تست توسعه
 

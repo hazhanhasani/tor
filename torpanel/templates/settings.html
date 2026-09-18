@@ -111,13 +111,23 @@
     <div class="callout info"><strong>بعد از فعال‌سازی:</strong> مثلاً اگر 3x-ui روی <code>https://panel.example.com:2053</code> باشد و پورت 2096 را انتخاب کنید، Tor Location Manager با <code>https://panel.example.com:2096</code> باز می‌شود.</div>
     {% endif %}
     <label class="check check-card">
-      <input type="checkbox" name="panel_tls_cloudflare_fallback" {% if panel_tls_cloudflare_fallback %}checked{% endif %}>
-      <span><b>Fallback هوشمند برای Cloudflare</b><small>اگر Private Key گواهی 3x-ui فقط روی Cloudflare Edge باشد یا روی Host پیدا نشود، یک Origin TLS محلی ECDSA برای همین دامنه می‌سازد تا پنل روی HTTPS بالا بیاید.</small></span>
+      <input type="checkbox" name="panel_tls_cloudflare_origin_ca" {% if panel_tls_cloudflare_origin_ca %}checked{% endif %}>
+      <span><b>Cloudflare Origin CA — مناسب Full (strict)</b><small>اگر SSL واقعی 3x-ui روی Host قابل دسترس نیست، پروژه یک کلید ECC محلی می‌سازد و با API رسمی Cloudflare برای همین hostname گواهی Origin CA می‌گیرد. این روش از Error 526 جلوگیری می‌کند و با Full (strict) سازگار است.</small></span>
     </label>
-    <div class="callout warning"><strong>حالت Fallback:</strong> رکورد دامنه باید در Cloudflare روی Proxied/Orange Cloud باشد و SSL/TLS Encryption Mode روی <code>Full</code> قرار گیرد. حالت <code>Full (strict)</code> با گواهی self-signed این Fallback کار نمی‌کند. اگر Certificate واقعی 3x-ui بعداً در دسترس شود، Sync بعدی خودکار دوباره همان را ترجیح می‌دهد.</div>
+    <label class="field"><span>Cloudflare API Token برای صدور Origin CA</span><input type="password" name="panel_tls_cloudflare_api_token" autocomplete="new-password" placeholder="فقط هنگام صدور وارد کنید؛ بعد از موفقیت پاک می‌شود"><small>Token باید مجوز <code>SSL and Certificates: Edit</code> برای Zone این دامنه داشته باشد. Token بعد از صدور موفق Certificate از دیتابیس حذف می‌شود.</small></label>
+    {% if panel_tls_cloudflare_origin_expires %}
+    <div class="callout success"><strong>Origin CA موجود:</strong> انقضا <code>{{ panel_tls_cloudflare_origin_expires }}</code>{% if panel_tls_cloudflare_origin_id %} · ID <code>{{ panel_tls_cloudflare_origin_id }}</code>{% endif %}</div>
+    {% endif %}
+    <label class="check check-card">
+      <input type="checkbox" name="panel_tls_cloudflare_fallback" {% if panel_tls_cloudflare_fallback %}checked{% endif %}>
+      <span><b>Fallback اضطراری Self-signed</b><small>فقط اگر Origin CA استفاده نمی‌کنی. این حالت برای Cloudflare <code>Full</code> است، نه Full (strict).</small></span>
+    </label>
+    <div class="callout warning"><strong>اگر Error 526 می‌بینی:</strong> Cloudflare در حالت Full (strict) است ولی Origin گواهی مورد اعتماد Cloudflare ندارد. گزینه Origin CA بالا را فعال و Token را یک‌بار وارد کن؛ یا موقتاً Encryption Mode را روی <code>Full</code> بگذار.</div>
     <div class="callout"><strong>تمدید خودکار:</strong> اگر Certificate واقعی 3x-ui قابل خواندن باشد همان فایل Sync می‌شود؛ در غیر این صورت گواهی Origin محلی قبل از نزدیک‌شدن به انقضا خودکار نوسازی می‌شود. Private Key در دیتابیس یا UI نمایش داده نمی‌شود.</div>
     {% if panel_tls_last_source %}
-    <div class="callout {{ 'warning' if panel_tls_last_source == 'cloudflare-full-selfsigned' else 'success' }}"><strong>منبع TLS فعلی:</strong> <code>{{ panel_tls_last_source }}</code>{% if panel_tls_last_source == 'cloudflare-full-selfsigned' %}<br><small>Cloudflare Full لازم است.</small>{% endif %}</div>
+    <div class="callout {{ 'warning' if panel_tls_last_source == 'cloudflare-full-selfsigned' else 'success' }}"><strong>منبع TLS فعلی:</strong> <code>{{ panel_tls_last_source }}</code>
+      {% if panel_tls_last_source == 'cloudflare-full-selfsigned' %}<br><small>Cloudflare Full لازم است؛ Full (strict) باعث 526 می‌شود.</small>{% elif panel_tls_last_source == 'cloudflare-origin-ca' %}<br><small>سازگار با Cloudflare Full (strict).</small>{% endif %}
+    </div>
     {% endif %}
     <div class="actions"><button class="button primary" type="submit">{{ icon('shield') }} اعمال HTTPS پنل</button></div>
   </form>

@@ -47,6 +47,7 @@ Germany Tor exit
 - HTTPS مستقیم برای خود پنل با استفاده از همان Certificate/Key محلی 3x-ui
 - ورود با دامنه 3x-ui به‌جای IP، Secure Cookie، HSTS و محدودسازی Host
 - Sync خودکار تمدید Certificate 3x-ui با systemd timer
+- WARP Assist اختیاری برای Route کردن دامنه‌های انتخابی از Cloudflare WARP و نگه‌داشتن بقیه ترافیک روی Tor
 - دریافت خودکار لیست Inboundهای 3x-ui
 - ساخت/ویرایش/حذف Location
 - Tor process مستقل برای هر کشور
@@ -147,6 +148,29 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 7. یک Location ایجاد کنید و Inboundهای موردنظر را انتخاب کنید.
 
 بعد از Save، پروژه Tor instance و Xray Gateway را می‌سازد، config فعلی Xray را از 3x-ui می‌خواند، Outbound اختصاصی `torloc-<slug>` و Rule مبتنی بر `inboundTag` را اضافه می‌کند و آن را از endpoint رسمی `/panel/api/xray/update` اعمال می‌کند.
+
+## WARP Assist برای سایت‌های حساس به IP خروجی Tor
+
+بعضی سایت‌ها به‌دلیل Reputation مشترک Exitهای Tor، Challenge یا بررسی امنیتی بیشتری نشان می‌دهند. WARP Assist اجازه می‌دهد فقط دامنه‌هایی که خودتان تعیین می‌کنید از Cloudflare WARP خارج شوند و سایر ترافیک همچنان از Tor Location انتخاب‌شده عبور کند.
+
+نصب رسمی Cloudflare WARP روی همان سرور Gateway:
+
+```bash
+sudo /usr/local/sbin/tor-location-manager-install-warp
+```
+
+Installer رسمی بسته `cloudflare-warp` را از repository کلادفلر نصب می‌کند، WARP را در Local Proxy mode روی `127.0.0.1:40000` راه‌اندازی می‌کند و با `cdn-cgi/trace` بررسی می‌کند که `warp=on` یا `warp=plus` باشد.
+
+سپس در **اتصال و شبکه → WARP Assist** قابلیت را فعال و دامنه‌ها را خط‌به‌خط وارد کنید، مثلاً:
+
+```text
+check-host.net
+example.com
+```
+
+Gateway برای این دامنه‌ها با Sniffing محدود HTTP/TLS یک Rule قبل از Rule عمومی Tor می‌سازد و آن‌ها را به Outbound محلی `warp-assist` می‌فرستد. UDP در مسیر Tor همچنان مسدود باقی می‌ماند و سایر دامنه‌ها به Tor Exit همان Location می‌روند.
+
+> WARP جای CAPTCHA solver نیست و تضمین نمی‌کند هر سیستم ضدربات Challenge را قبول کند؛ فقط IP خروجی دامنه انتخابی را از Tor به شبکه Cloudflare تغییر می‌دهد.
 
 ## استفاده از SSL خود 3x-ui برای پنل Tor
 

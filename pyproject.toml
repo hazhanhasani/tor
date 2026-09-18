@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tor-location-manager"
-version = "1.9.5"
-description = "Multi-panel Tor egress, Cloudflare CDN inbound, x-ui SSL web panel, and hybrid Iran/foreign tunnel manager with 3x-ui and PasarGuard routing"
+version = "1.10.0"
+description = "Multi-panel Tor egress, selective Cloudflare WARP Assist, Cloudflare CDN inbound, x-ui SSL web panel, and hybrid Iran/foreign tunnel manager"
 requires-python = ">=3.10"
 dependencies = [
   "Flask>=3.0,<4",

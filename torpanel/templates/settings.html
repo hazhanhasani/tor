@@ -70,7 +70,7 @@
           </label>
 
           <label class="field"><span>دامنه‌های سفارشی</span>
-            <textarea name="xui_warp_custom_domains" rows="7" class="mono" placeholder="example.com&#10;site.ir">{% for domain in xui_warp_domains if domain not in (xui_warp_domain_presets | map(attribute=0) | list) %}{{ domain }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+            <textarea name="xui_warp_custom_domains" rows="7" class="mono" placeholder="example.com&#10;site.ir">{% for domain in xui_warp_domains %}{{ domain }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
             <small>هر دامنه یک خط. زیر‌دامنه‌ها هم پوشش داده می‌شوند. <code>challenges.cloudflare.com</code> به‌صورت خودکار کنار دامنه‌های انتخابی از همان WARP Exit عبور می‌کند.</small>
           </label>
         </div>

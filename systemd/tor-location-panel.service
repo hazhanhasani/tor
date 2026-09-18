@@ -10,7 +10,7 @@ Group=torpanel
 WorkingDirectory=/opt/tor-location-manager
 Environment=TORPANEL_ENV_FILE=/etc/tor-location-manager/panel.env
 EnvironmentFile=/etc/tor-location-manager/panel.env
-ExecStart=/opt/tor-location-manager/venv/bin/python -m gunicorn --workers 2 --threads 4 --timeout 120 --bind ${TORPANEL_BIND}:${TORPANEL_PORT} wsgi:app
+ExecStart=/opt/tor-location-manager/venv/bin/python -m torpanel.panel_server
 Restart=on-failure
 RestartSec=3
 PrivateTmp=true

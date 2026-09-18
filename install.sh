@@ -183,6 +183,8 @@ install -m 0755 "$APP_DIR/scripts/tor-location-manager-update" /usr/local/sbin/t
 install -m 0644 "$APP_DIR/systemd/tor-location@.service" /etc/systemd/system/tor-location@.service
 install -m 0644 "$APP_DIR/systemd/tor-location-gateway.service" /etc/systemd/system/tor-location-gateway.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel.service" /etc/systemd/system/tor-location-panel.service
+install -m 0644 "$APP_DIR/systemd/tor-location-panel-tls-sync.service" /etc/systemd/system/tor-location-panel-tls-sync.service
+install -m 0644 "$APP_DIR/systemd/tor-location-panel-tls-sync.timer" /etc/systemd/system/tor-location-panel-tls-sync.timer
 
 echo "[4/8] Configuring persistent settings..."
 if [[ $EXISTING -eq 0 ]]; then
@@ -203,6 +205,10 @@ PY
   cat > "$ENV_FILE" <<EOF
 TORPANEL_BIND=${TORPANEL_BIND:-0.0.0.0}
 TORPANEL_PORT=${TORPANEL_PORT:-8787}
+TORPANEL_TLS_ENABLED=0
+TORPANEL_TLS_CERTFILE=${ETC_DIR}/tls/panel.crt
+TORPANEL_TLS_KEYFILE=${ETC_DIR}/tls/panel.key
+TORPANEL_PUBLIC_HOST=
 TORPANEL_ADMIN_USERNAME=${ADMIN_USER}
 TORPANEL_ADMIN_PASSWORD_HASH=${ADMIN_HASH}
 TORPANEL_FLASK_SECRET_KEY=${SECRET_KEY}
@@ -214,6 +220,7 @@ TORPANEL_TOR_DATA_DIR=${DATA_DIR}/tor
 TORPANEL_GATEWAY_CONFIG=${ETC_DIR}/xray-gateway.json
 TORPANEL_XRAY_BIN=$(command -v xray)
 TORPANEL_HELPER_CMD=sudo -n ${APP_DIR}/venv/bin/python -m torpanel.helper apply
+TORPANEL_TLS_HELPER_CMD=sudo -n ${APP_DIR}/venv/bin/python -m torpanel.helper panel-tls-sync --restart
 TORPANEL_UPDATE_REPO=hazhanhasani/tor
 TORPANEL_GITHUB_API_BASE=${GITHUB_API_BASE}
 TORPANEL_RELEASE_MIRROR_BASE=${RELEASE_MIRROR_BASE}
@@ -233,6 +240,11 @@ else
     local key="$1" value="$2"
     grep -q "^${key}=" "$ENV_FILE" || printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
   }
+  ensure_env TORPANEL_TLS_ENABLED 0
+  ensure_env TORPANEL_TLS_CERTFILE "$ETC_DIR/tls/panel.crt"
+  ensure_env TORPANEL_TLS_KEYFILE "$ETC_DIR/tls/panel.key"
+  ensure_env TORPANEL_PUBLIC_HOST ""
+  ensure_env TORPANEL_TLS_HELPER_CMD "sudo -n ${APP_DIR}/venv/bin/python -m torpanel.helper panel-tls-sync --restart"
   ensure_env TORPANEL_UPDATE_REPO hazhanhasani/tor
   ensure_env TORPANEL_GITHUB_API_BASE "$GITHUB_API_BASE"
   ensure_env TORPANEL_RELEASE_MIRROR_BASE "$RELEASE_MIRROR_BASE"
@@ -247,6 +259,7 @@ chown root:torpanel "$ENV_FILE"
 SYSTEMD_RUN="$(command -v systemd-run)"
 cat > /etc/sudoers.d/tor-location-manager <<EOF
 torpanel ALL=(root) NOPASSWD: ${APP_DIR}/venv/bin/python -m torpanel.helper apply
+torpanel ALL=(root) NOPASSWD: ${APP_DIR}/venv/bin/python -m torpanel.helper panel-tls-sync --restart
 torpanel ALL=(root) NOPASSWD: ${SYSTEMD_RUN} --unit=tor-location-manager-update --collect --property=Type=exec /usr/local/sbin/tor-location-manager-update *
 EOF
 chmod 0440 /etc/sudoers.d/tor-location-manager
@@ -264,14 +277,21 @@ chmod -R 0755 "$ETC_DIR/instances"
 
 systemctl daemon-reload
 systemctl enable tor-location-panel.service >/dev/null
+systemctl enable --now tor-location-panel-tls-sync.timer >/dev/null
 systemctl restart tor-location-panel.service
 
 echo "[6/8] Running panel health check..."
 PANEL_PORT="$(awk -F= '$1=="TORPANEL_PORT"{print $2}' "$ENV_FILE" | tail -1)"
 PANEL_PORT="${PANEL_PORT:-8787}"
+PANEL_TLS_ENABLED="$(awk -F= '$1=="TORPANEL_TLS_ENABLED"{print $2}' "$ENV_FILE" | tail -1)"
+PANEL_TLS_ENABLED="${PANEL_TLS_ENABLED:-0}"
 HEALTHY=0
 for _ in $(seq 1 20); do
-  if curl -fsS --max-time 2 "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  if [[ "$PANEL_TLS_ENABLED" == "1" ]]; then
+    if curl -kfsS --max-time 2 "https://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  else
+    if curl -fsS --max-time 2 "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  fi
   sleep 1
 done
 if [[ $HEALTHY -ne 1 ]]; then
@@ -297,7 +317,16 @@ fi
 echo "[8/8] Installation complete."
 echo
 echo "Tor Location Manager v$VERSION is ready."
-echo "Panel: http://SERVER_IP:${PANEL_PORT}"
+PANEL_PUBLIC_HOST="$(awk -F= '$1=="TORPANEL_PUBLIC_HOST"{print $2}' "$ENV_FILE" | tail -1)"
+if [[ "$PANEL_TLS_ENABLED" == "1" && -n "$PANEL_PUBLIC_HOST" ]]; then
+  if [[ "$PANEL_PORT" == "443" ]]; then
+    echo "Panel: https://$PANEL_PUBLIC_HOST"
+  else
+    echo "Panel: https://$PANEL_PUBLIC_HOST:$PANEL_PORT"
+  fi
+else
+  echo "Panel: http://SERVER_IP:$PANEL_PORT"
+fi
 if [[ $EXISTING -eq 0 ]]; then
   echo "Username: ${ADMIN_USER}"
   echo "Password: ${ADMIN_PASS}"

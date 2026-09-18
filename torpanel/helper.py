@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
-from .db import get_setting, init_db, list_locations, list_tunnel_links
+from .db import get_setting, init_db, list_locations, list_tunnel_links, set_setting
 from .security import decrypt_secret
 
 NODE_AGENT_CONFIG = Path("/etc/tor-location-node/agent.json")
@@ -521,8 +521,16 @@ def main() -> None:
         else:
             print("Panel HTTPS disabled; HTTP fallback restored.")
         return
+    if len(sys.argv) == 2 and sys.argv[1] == "panel-tls-disable":
+        if os.geteuid() != 0:
+            raise SystemExit("helper must run as root")
+        init_db()
+        set_setting("panel_tls_enabled", "0")
+        result = sync_panel_tls(restart=True)
+        print("Panel HTTPS disabled. HTTP fallback will be restored on port 8787.")
+        return
     raise SystemExit(
-        "usage: python -m torpanel.helper {apply|panel-tls-sync [--restart]}"
+        "usage: python -m torpanel.helper {apply|panel-tls-sync [--restart]|panel-tls-disable}"
     )
 
 

@@ -210,9 +210,9 @@ def _obj(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _client_projection(row: Any) -> tuple[str, str, bool, str, int]:
+def _client_projection(row: Any) -> tuple[str, str, bool, str, int, str]:
     if not isinstance(row, dict):
-        return ("", "", False, "", 0)
+        return ("", "", False, "", 0, "")
     raw_tg_id = row.get("tgId", 0)
     # 3x-ui's Go model requires tgId to be JSON integer (int64), never an
     # empty string. Treat legacy empty-string data as a mismatch so the next
@@ -227,6 +227,7 @@ def _client_projection(row: Any) -> tuple[str, str, bool, str, int]:
         bool(row.get("enable", True)),
         str(row.get("flow") or ""),
         tg_id,
+        str(row.get("subId") or ""),
     )
 
 
@@ -242,6 +243,8 @@ def cdn_inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bo
     current_settings = _obj(current.get("settings"))
     expected_settings = expected["settings"]
     if str(current_settings.get("decryption") or "") != "none":
+        return False
+    if str(current_settings.get("encryption") or "") != "none":
         return False
     current_clients = sorted(_client_projection(x) for x in (current_settings.get("clients") or []))
     expected_clients = sorted(_client_projection(x) for x in expected_settings["clients"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import secrets
 import sqlite3
@@ -56,13 +57,14 @@ from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings as xui_current_settings, normalize_api_token
 from .xui_cdn import (
+    CDN_MANAGED_TAG,
     CDNProfileError,
     managed_cdn_client_uri,
     normalize_cdn_domain,
     normalize_cdn_port,
     normalize_ws_path,
 )
-from .warp import WarpAssistError, normalize_warp_domains, test_warp_proxy
+from .warp import WARP_DOMAIN_PRESETS, WarpAssistError, normalize_warp_domains
 
 
 def _format_conflicts(conflicts: dict[str, list[str]]) -> str:
@@ -242,9 +244,13 @@ def make_app() -> Flask:
             cdn_reject_unknown_sni = "1" if request.form.get("xui_cdn_reject_unknown_sni") == "on" else "0"
             tor_transport_mode = request.form.get("tor_transport_mode", "direct").strip().lower()
             tor_bridge_lines = request.form.get("tor_bridge_lines", "").strip()
-            warp_assist_enabled = "1" if request.form.get("warp_assist_enabled") == "on" else "0"
-            warp_proxy_port_raw = request.form.get("warp_proxy_port", "40000").strip()
-            warp_assist_domains_raw = request.form.get("warp_assist_domains", "").strip()
+            xui_warp_enabled = "1" if request.form.get("xui_warp_enabled") == "on" else "0"
+            xui_warp_mode = request.form.get("xui_warp_mode", "domains").strip().lower()
+            xui_warp_custom_domains = request.form.get("xui_warp_custom_domains", "").strip()
+            xui_warp_domain_presets = request.form.getlist("xui_warp_domain_presets")
+            xui_warp_inbound_tags = [
+                str(x).strip() for x in request.form.getlist("xui_warp_inbound_tags") if str(x).strip()
+            ]
             if base_url and not re.match(r"^https?://", base_url, re.I):
                 flash("آدرس 3x-ui باید با http:// یا https:// شروع شود.", "danger")
                 return redirect(url_for("settings"))
@@ -276,22 +282,26 @@ def make_app() -> Flask:
                 except ValueError:
                     cdn_port = 8443
 
-            try:
-                warp_proxy_port = int(warp_proxy_port_raw or 40000)
-            except ValueError:
-                flash("پورت WARP Proxy معتبر نیست.", "danger")
-                return redirect(url_for("settings"))
-            if not 1024 <= warp_proxy_port <= 65535:
-                flash("پورت WARP Proxy باید بین 1024 و 65535 باشد.", "danger")
+            if xui_warp_mode not in {"domains", "all"}:
+                flash("حالت WARP معتبر نیست.", "danger")
                 return redirect(url_for("settings"))
             try:
-                warp_domains = normalize_warp_domains(warp_assist_domains_raw)
+                warp_domains = normalize_warp_domains([
+                    *xui_warp_domain_presets,
+                    *xui_warp_custom_domains.splitlines(),
+                ])
             except WarpAssistError as exc:
                 flash(str(exc), "danger")
                 return redirect(url_for("settings"))
-            if warp_assist_enabled == "1" and not warp_domains:
-                flash("برای WARP Assist حداقل یک دامنه وارد کنید.", "danger")
+            if xui_warp_enabled == "1" and xui_warp_mode == "domains" and not warp_domains:
+                flash("برای WARP دامنه‌ای حداقل یک سایت انتخاب یا وارد کنید.", "danger")
                 return redirect(url_for("settings"))
+            if (
+                xui_warp_enabled == "1"
+                and not xui_warp_inbound_tags
+                and managed_inbound_mode == "cloudflare"
+            ):
+                xui_warp_inbound_tags = [CDN_MANAGED_TAG]
 
             if tor_transport_mode not in {"direct", "obfs4"}:
                 flash("حالت اتصال Tor معتبر نیست.", "danger")
@@ -319,9 +329,13 @@ def make_app() -> Flask:
             set_setting("xui_cdn_reject_unknown_sni", cdn_reject_unknown_sni)
             set_setting("tor_transport_mode", tor_transport_mode)
             set_setting("tor_bridge_lines", tor_bridge_lines)
-            set_setting("warp_assist_enabled", warp_assist_enabled)
-            set_setting("warp_proxy_port", str(warp_proxy_port))
-            set_setting("warp_assist_domains", "\n".join(warp_domains))
+            set_setting("xui_warp_enabled", xui_warp_enabled)
+            set_setting("xui_warp_mode", xui_warp_mode)
+            set_setting("xui_warp_domains_json", json.dumps(warp_domains, ensure_ascii=False))
+            set_setting("xui_warp_inbound_tags", json.dumps(xui_warp_inbound_tags, ensure_ascii=False))
+            # v1.10.0 used a separate local warp-cli proxy in the Tor Gateway.
+            # Native 3x-ui WARP replaces it; disable the legacy path explicitly.
+            set_setting("warp_assist_enabled", "0")
             try:
                 apply_runtime()
                 flash("تنظیمات 3x-ui و Tor ذخیره و اعمال شد.", "success")
@@ -370,9 +384,13 @@ def make_app() -> Flask:
             panel_tls_cloudflare_origin_id=get_setting("panel_tls_cloudflare_origin_id", ""),
             panel_tls_last_source=get_setting("panel_tls_last_source", ""),
             panel_tls_last_error=get_setting("panel_tls_last_error", ""),
-            warp_assist_enabled=get_setting("warp_assist_enabled", "0") == "1",
-            warp_proxy_port=get_setting("warp_proxy_port", "40000") or "40000",
-            warp_assist_domains=get_setting("warp_assist_domains", "check-host.net"),
+            xui_warp_enabled=get_setting("xui_warp_enabled", "0") == "1",
+            xui_warp_mode=get_setting("xui_warp_mode", "domains") or "domains",
+            xui_warp_domains=json.loads(get_setting("xui_warp_domains_json", '["check-host.net"]') or "[]"),
+            xui_warp_inbound_tags=json.loads(get_setting("xui_warp_inbound_tags", "[]") or "[]"),
+            xui_warp_domain_presets=WARP_DOMAIN_PRESETS,
+            xui_warp_available_inbounds=_settings_warp_inbounds(),
+            xui_warp_status=_settings_warp_status(),
         )
 
     @app.post("/settings/panel-tls")
@@ -487,21 +505,32 @@ def make_app() -> Flask:
     def settings_warp_test():
         validate_csrf(request.form.get("_csrf"))
         try:
-            port = int(request.form.get("warp_proxy_port") or get_setting("warp_proxy_port", "40000") or 40000)
-            result = test_warp_proxy(port)
-            details = []
-            if result.get("warp"):
-                details.append(f"WARP={result['warp']}")
-            if result.get("colo"):
-                details.append(f"colo={result['colo']}")
-            if result.get("loc"):
-                details.append(f"loc={result['loc']}")
-            flash(
-                "WARP Assist سالم است" + (f"؛ {' · '.join(details)}" if details else ""),
-                "success",
+            cfg = xui_current_settings()
+            client = XUIClient(cfg)
+            config = client.get_xray_config()
+            outbounds = config.get("outbounds") if isinstance(config.get("outbounds"), list) else []
+            warp = next(
+                (row for row in outbounds if isinstance(row, dict) and str(row.get("tag") or "") == "warp"),
+                None,
             )
+            if not warp:
+                raise XUIError("Outbound با tag=warp هنوز در 3x-ui ساخته نشده است؛ تنظیمات را ذخیره کنید.")
+            result = client.test_outbound(warp, outbounds)
+            details = []
+            for key in ("ipv4", "ipv6", "country", "warp"):
+                if result.get(key):
+                    details.append(f"{key}={result[key]}")
+            warp_state = str(result.get("warp") or "").lower()
+            if warp_state in {"on", "plus"}:
+                flash("WARP خود 3x-ui سالم است" + (f"؛ {' · '.join(details)}" if details else ""), "success")
+            else:
+                flash(
+                    "Outbound WARP در 3x-ui وجود دارد، اما تست Cloudflare آن را فعال تشخیص نداد"
+                    + (f"؛ {' · '.join(details)}" if details else ""),
+                    "warning",
+                )
         except Exception as exc:
-            flash(f"تست WARP ناموفق بود: {exc}", "danger")
+            flash(f"تست WARP در 3x-ui ناموفق بود: {exc}", "danger")
         return redirect(url_for("settings"))
 
     @app.post("/settings/test")

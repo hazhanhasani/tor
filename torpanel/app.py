@@ -62,6 +62,7 @@ from .xui_cdn import (
     normalize_cdn_port,
     normalize_ws_path,
 )
+from .warp import WarpAssistError, normalize_warp_domains, test_warp_proxy
 
 
 def _format_conflicts(conflicts: dict[str, list[str]]) -> str:
@@ -241,6 +242,9 @@ def make_app() -> Flask:
             cdn_reject_unknown_sni = "1" if request.form.get("xui_cdn_reject_unknown_sni") == "on" else "0"
             tor_transport_mode = request.form.get("tor_transport_mode", "direct").strip().lower()
             tor_bridge_lines = request.form.get("tor_bridge_lines", "").strip()
+            warp_assist_enabled = "1" if request.form.get("warp_assist_enabled") == "on" else "0"
+            warp_proxy_port_raw = request.form.get("warp_proxy_port", "40000").strip()
+            warp_assist_domains_raw = request.form.get("warp_assist_domains", "").strip()
             if base_url and not re.match(r"^https?://", base_url, re.I):
                 flash("آدرس 3x-ui باید با http:// یا https:// شروع شود.", "danger")
                 return redirect(url_for("settings"))
@@ -272,6 +276,23 @@ def make_app() -> Flask:
                 except ValueError:
                     cdn_port = 8443
 
+            try:
+                warp_proxy_port = int(warp_proxy_port_raw or 40000)
+            except ValueError:
+                flash("پورت WARP Proxy معتبر نیست.", "danger")
+                return redirect(url_for("settings"))
+            if not 1024 <= warp_proxy_port <= 65535:
+                flash("پورت WARP Proxy باید بین 1024 و 65535 باشد.", "danger")
+                return redirect(url_for("settings"))
+            try:
+                warp_domains = normalize_warp_domains(warp_assist_domains_raw)
+            except WarpAssistError as exc:
+                flash(str(exc), "danger")
+                return redirect(url_for("settings"))
+            if warp_assist_enabled == "1" and not warp_domains:
+                flash("برای WARP Assist حداقل یک دامنه وارد کنید.", "danger")
+                return redirect(url_for("settings"))
+
             if tor_transport_mode not in {"direct", "obfs4"}:
                 flash("حالت اتصال Tor معتبر نیست.", "danger")
                 return redirect(url_for("settings"))
@@ -298,6 +319,9 @@ def make_app() -> Flask:
             set_setting("xui_cdn_reject_unknown_sni", cdn_reject_unknown_sni)
             set_setting("tor_transport_mode", tor_transport_mode)
             set_setting("tor_bridge_lines", tor_bridge_lines)
+            set_setting("warp_assist_enabled", warp_assist_enabled)
+            set_setting("warp_proxy_port", str(warp_proxy_port))
+            set_setting("warp_assist_domains", "\n".join(warp_domains))
             try:
                 apply_runtime()
                 flash("تنظیمات 3x-ui و Tor ذخیره و اعمال شد.", "success")
@@ -340,6 +364,9 @@ def make_app() -> Flask:
             panel_tls_public_host=get_setting("panel_tls_public_host", ""),
             panel_tls_public_url=panel_public_url(),
             panel_https_ports=PANEL_HTTPS_PORTS,
+            warp_assist_enabled=get_setting("warp_assist_enabled", "0") == "1",
+            warp_proxy_port=get_setting("warp_proxy_port", "40000") or "40000",
+            warp_assist_domains=get_setting("warp_assist_domains", ""),
         )
 
     @app.post("/settings/panel-tls")
@@ -412,6 +439,28 @@ def make_app() -> Flask:
             except Exception:
                 pass
             flash(f"فعال‌سازی HTTPS پنل انجام نشد: {exc}", "danger")
+        return redirect(url_for("settings"))
+
+    @app.post("/settings/warp-test")
+    @login_required
+    def settings_warp_test():
+        validate_csrf(request.form.get("_csrf"))
+        try:
+            port = int(get_setting("warp_proxy_port", "40000") or 40000)
+            result = test_warp_proxy(port)
+            details = []
+            if result.get("warp"):
+                details.append(f"WARP={result['warp']}")
+            if result.get("colo"):
+                details.append(f"colo={result['colo']}")
+            if result.get("loc"):
+                details.append(f"loc={result['loc']}")
+            flash(
+                "WARP Assist سالم است" + (f"؛ {' · '.join(details)}" if details else ""),
+                "success",
+            )
+        except Exception as exc:
+            flash(f"تست WARP ناموفق بود: {exc}", "danger")
         return redirect(url_for("settings"))
 
     @app.post("/settings/test")

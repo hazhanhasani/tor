@@ -420,7 +420,13 @@ def make_app() -> Flask:
                     f"پورت HTTPS پنل {port} در 3x-ui توسط Inbound دیگری استفاده می‌شود ({names}). "
                     "یک پورت HTTPS آزاد دیگر انتخاب کنید."
                 )
-            certs = xui_client.get_web_cert_files()
+            fallback_requested = request.form.get("panel_tls_cloudflare_fallback") == "on"
+            try:
+                certs = xui_client.get_web_cert_files()
+            except Exception:
+                if not fallback_requested:
+                    raise
+                certs = {"webCertFile": "", "webKeyFile": ""}
             set_setting("panel_tls_enabled", "1")
             set_setting("panel_tls_public_host", host)
             set_setting("panel_tls_port", str(port))
@@ -428,7 +434,7 @@ def make_app() -> Flask:
             set_setting("panel_tls_source_key", certs["webKeyFile"])
             set_setting(
                 "panel_tls_cloudflare_fallback",
-                "1" if request.form.get("panel_tls_cloudflare_fallback") == "on" else "0",
+                "1" if fallback_requested else "0",
             )
             output = apply_panel_tls()
             suffix = "" if port == 443 else f":{port}"

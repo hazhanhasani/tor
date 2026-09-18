@@ -254,6 +254,24 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
     enabled = [loc for loc in locations if loc.get("enabled")]
     removed = 0
 
+    desired_port = normalize_cdn_port(client.settings.cdn_port)
+    conflicts = [
+        row for row in options
+        if str(row.get("tag") or "") != CDN_MANAGED_TAG
+        and int(row.get("port") or 0) == desired_port
+    ]
+    if conflicts:
+        names = ", ".join(
+            str(row.get("remark") or row.get("tag") or row.get("id") or "Inbound")
+            for row in conflicts[:5]
+        )
+        alternatives = sorted(CLOUDFLARE_HTTPS_PORTS - {desired_port})
+        raise CDNProfileError(
+            f"پورت {desired_port} قبلاً در 3x-ui استفاده می‌شود ({names}). "
+            f"یکی از پورت‌های آزاد سازگار با Cloudflare را انتخاب کنید: "
+            + ", ".join(str(port) for port in alternatives)
+        )
+
     # Cloudflare mode replaces the old per-location SS2022 public inbounds.
     for row in list(options):
         tag = str(row.get("tag") or "")

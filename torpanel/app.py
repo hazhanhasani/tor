@@ -369,7 +369,7 @@ def make_app() -> Flask:
             panel_tls_last_error=get_setting("panel_tls_last_error", ""),
             warp_assist_enabled=get_setting("warp_assist_enabled", "0") == "1",
             warp_proxy_port=get_setting("warp_proxy_port", "40000") or "40000",
-            warp_assist_domains=get_setting("warp_assist_domains", ""),
+            warp_assist_domains=get_setting("warp_assist_domains", "check-host.net"),
         )
 
     @app.post("/settings/panel-tls")

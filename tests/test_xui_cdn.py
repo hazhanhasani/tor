@@ -73,6 +73,8 @@ def test_shared_cdn_inbound_uses_panel_certificate_and_one_client_per_location()
     assert payload["port"] == 8443
     assert len(payload["settings"]["clients"]) == 2
     assert payload["settings"]["decryption"] == "none"
+    assert all(client["tgId"] == 0 for client in payload["settings"]["clients"])
+    assert all(isinstance(client["tgId"], int) for client in payload["settings"]["clients"])
     assert payload["streamSettings"]["network"] == "ws"
     assert payload["streamSettings"]["security"] == "tls"
     assert payload["streamSettings"]["wsSettings"]["path"] == "/edge-AbCd1234"

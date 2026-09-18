@@ -547,7 +547,12 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     outbounds[:] = [o for o in outbounds if not (
         isinstance(o, dict) and str(o.get("tag", "")).startswith(MANAGED_PREFIX))]
     rules[:] = [r for r in rules if not (
-        isinstance(r, dict) and str(r.get("outboundTag", "")).startswith(MANAGED_PREFIX))]
+        isinstance(r, dict)
+        and (
+            str(r.get("outboundTag", "")).startswith(MANAGED_PREFIX)
+            or str(r.get("ruleTag") or "") == "torloc-warp"
+        )
+    )]
 
     managed_rules: list[dict[str, Any]] = []
     warp_tags = list(dict.fromkeys(str(x) for x in (warp_inbound_tags or []) if x))
@@ -556,6 +561,7 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     if warp_enabled and warp_tags:
         warp_rule: dict[str, Any] = {
             "type": "field",
+            "ruleTag": "torloc-warp",
             "inboundTag": warp_tags,
             "outboundTag": "warp",
         }

@@ -1,3 +1,4 @@
+import torpanel.xui as xui_module
 import base64
 
 from torpanel.xui import (
@@ -239,3 +240,7 @@ def test_ensure_warp_outbound_repairs_stale_native_outbound(monkeypatch):
     assert outbound["settings"]["sockopt"] == {"mark": 7}
     assert original["outbounds"][0]["settings"]["secretKey"] == "stale-secret"
 
+
+
+def test_sync_runtime_has_set_setting_dependency():
+    assert callable(xui_module.set_setting)

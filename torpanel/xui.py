@@ -13,7 +13,7 @@ import urllib3
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 
-from .db import get_setting, set_location_xui_inbound_port
+from .db import get_setting, set_location_xui_inbound_port, set_setting
 from .security import decrypt_secret
 from .warp import xray_domain_rules
 from .xui_cdn import (

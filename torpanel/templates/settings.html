@@ -20,6 +20,22 @@
       <label class="check check-card"><input type="checkbox" name="xui_verify_tls" {% if xui_verify_tls %}checked{% endif %}><span><b>اعتبار TLS پنل بررسی شود</b><small>برای HTTPS واقعی روشن بماند؛ فقط در محیط تست با گواهی self-signed خاموش کنید.</small></span></label>
 
       <div class="form-section" style="padding:17px">
+        <div class="form-section-title"><span class="form-section-number">CF</span><div><h3>Managed Inbound مناسب Cloudflare CDN</h3><p>به‌جای یک Inbound عمومی برای هر Location، یک VLESS + WebSocket + TLS مشترک می‌سازد و هر Location را با Client اختصاصی به Tor Exit خودش Route می‌کند.</p></div></div>
+        <div class="segmented">
+          <div class="segment-option"><input id="managedLegacy" type="radio" name="xui_managed_inbound_mode" value="legacy" {% if xui_managed_inbound_mode != 'cloudflare' %}checked{% endif %}><label for="managedLegacy">Legacy SS2022<small>Inbound TCP مستقل برای هر Location</small></label></div>
+          <div class="segment-option"><input id="managedCloudflare" type="radio" name="xui_managed_inbound_mode" value="cloudflare" {% if xui_managed_inbound_mode == 'cloudflare' %}checked{% endif %}><label for="managedCloudflare">Cloudflare CDN<small>یک Inbound مشترک VLESS + WS + TLS</small></label></div>
+        </div>
+        <div class="two" style="margin-top:13px">
+          <label class="field"><span>دامنه Proxied در Cloudflare</span><input name="xui_cdn_domain" value="{{ xui_cdn_domain }}" placeholder="edge.example.com"><small>رکورد A/AAAA/CNAME باید Orange Cloud باشد. اگر خالی باشد، hostname آدرس 3x-ui استفاده می‌شود.</small></label>
+          <label class="field"><span>پورت HTTPS CDN</span><select name="xui_cdn_port">{% for port in [443,2053,2083,2087,2096,8443] %}<option value="{{ port }}" {% if xui_cdn_port|string == port|string %}selected{% endif %}>{{ port }}</option>{% endfor %}</select><small>فقط پورت‌هایی که Cloudflare برای HTTPS Proxy می‌کند.</small></label>
+        </div>
+        <label class="field"><span>WebSocket Path</span><input name="xui_cdn_ws_path" value="{{ xui_cdn_ws_path }}" placeholder="خالی = تولید مسیر تصادفی امن"><small>مثلاً <code>/edge-a8F2...</code>. هنگام اولین ذخیره اگر خالی باشد خودکار ساخته و ثابت نگه داشته می‌شود.</small></label>
+        <label class="check check-card"><input type="checkbox" name="xui_cdn_reject_unknown_sni" {% if xui_cdn_reject_unknown_sni %}checked{% endif %}><span><b>ردکردن SNI ناشناس</b><small>Origin فقط TLS با SNI دامنه تنظیم‌شده را قبول می‌کند.</small></span></label>
+        <div class="callout success" style="margin-top:10px"><strong>Certificate خود پنل:</strong> پروژه مسیرهای <code>webCertFile</code> و <code>webKeyFile</code> را مستقیماً از API خود 3x-ui می‌خواند و همان Certificate را روی Inbound TLS استفاده می‌کند؛ Private Key از سرور خارج نمی‌شود و فقط مسیر فایل به Xray داده می‌شود.</div>
+        <div class="callout warning" style="margin-top:10px"><strong>Cloudflare:</strong> WebSockets باید فعال باشد و SSL/TLS روی <code>Full (strict)</code> قرار گیرد. این پروفایل برای CDN استاندارد از WebSocket/HTTPS استفاده می‌کند؛ REALITY و WireGuard خام از Proxy عادی Cloudflare عبور نمی‌کنند.</div>
+      </div>
+
+      <div class="form-section" style="padding:17px">
         <div class="form-section-title"><span class="form-section-number">IR</span><div><h3>سازگاری Tor با سرور ایران / شبکه محدود</h3><p>Direct برای حالت عادی و obfs4 برای شبکه‌ای که bootstrap مستقیم Tor مسدود است.</p></div></div>
         <div class="segmented">
           <div class="segment-option"><input id="transportDirect" type="radio" name="tor_transport_mode" value="direct" {% if tor_transport_mode == 'direct' %}checked{% endif %}><label for="transportDirect">Direct<small>اتصال مستقیم و کم‌هزینه‌تر به شبکه Tor</small></label></div>

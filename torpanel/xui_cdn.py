@@ -8,7 +8,10 @@ import uuid
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 
+from .db import set_setting
+
 CDN_MANAGED_TAG = "torloc-cdn"
+CDN_MANAGED_REMARK = "Tor CDN Gateway · Cloudflare"
 LEGACY_MANAGED_PREFIX = "torloc-in-"
 CLOUDFLARE_HTTPS_PORTS = {443, 2053, 2083, 2087, 2096, 8443}
 DOMAIN_RE = re.compile(
@@ -137,7 +140,7 @@ def build_cdn_inbound_payload(
         if loc.get("enabled")
     ]
     return {
-        "remark": "Tor CDN Gateway · Cloudflare",
+        "remark": CDN_MANAGED_REMARK,
         "enable": True,
         "expiryTime": 0,
         "total": 0,
@@ -307,58 +310,157 @@ def cdn_inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bo
     return True
 
 
-def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
+def _is_managed_cdn_row(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("tag") or "") == CDN_MANAGED_TAG
+        or str(row.get("remark") or "") == CDN_MANAGED_REMARK
+    )
+
+
+def _xui_web_port(settings: Any) -> int:
+    try:
+        parsed = urlparse(str(getattr(settings, "base_url", "") or ""))
+        if parsed.port:
+            return int(parsed.port)
+        return 443 if parsed.scheme == "https" else 80
+    except Exception:
+        return 0
+
+
+def _pick_free_cdn_port(options: list[dict[str, Any]], settings: Any, preferred: int) -> int:
+    used = {
+        int(row.get("port") or 0)
+        for row in options
+        if int(row.get("port") or 0) > 0 and not _is_managed_cdn_row(row)
+    }
+    panel_port = _xui_web_port(settings)
+    if panel_port:
+        used.add(panel_port)
+    order = [preferred, 443, 8443, 2053, 2083, 2087, 2096]
+    for port in order:
+        if port in CLOUDFLARE_HTTPS_PORTS and port not in used:
+            return port
+    raise CDNProfileError(
+        "هیچ پورت HTTPS آزاد سازگار با Cloudflare برای Inbound مدیریت‌شده پیدا نشد."
+    )
+
+
+def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
     options = client.list_inbounds()
     enabled = [loc for loc in locations if loc.get("enabled")]
     removed = 0
 
     desired_port = normalize_cdn_port(client.settings.cdn_port)
+    managed_rows = [row for row in options if _is_managed_cdn_row(row)]
+    existing = next(
+        (row for row in managed_rows if int(row.get("port") or 0) == desired_port),
+        None,
+    )
+    if existing is None and managed_rows:
+        existing = next(
+            (row for row in managed_rows if str(row.get("tag") or "") == CDN_MANAGED_TAG),
+            managed_rows[0],
+        )
+        existing_port = int(existing.get("port") or 0)
+        if existing_port in CLOUDFLARE_HTTPS_PORTS:
+            desired_port = existing_port
+            client.settings.cdn_port = existing_port
+            set_setting("xui_cdn_port", str(existing_port))
+
     conflicts = [
         row for row in options
-        if str(row.get("tag") or "") != CDN_MANAGED_TAG
+        if not _is_managed_cdn_row(row)
         and int(row.get("port") or 0) == desired_port
     ]
-    if conflicts:
-        names = ", ".join(
-            str(row.get("remark") or row.get("tag") or row.get("id") or "Inbound")
-            for row in conflicts[:5]
-        )
-        alternatives = sorted(CLOUDFLARE_HTTPS_PORTS - {desired_port})
-        raise CDNProfileError(
-            f"پورت {desired_port} قبلاً در 3x-ui استفاده می‌شود ({names}). "
-            f"یکی از پورت‌های آزاد سازگار با Cloudflare را انتخاب کنید: "
-            + ", ".join(str(port) for port in alternatives)
-        )
+    if conflicts and existing is None:
+        chosen = _pick_free_cdn_port(options, client.settings, desired_port)
+        if chosen != desired_port:
+            desired_port = chosen
+            client.settings.cdn_port = chosen
+            set_setting("xui_cdn_port", str(chosen))
 
     # Cloudflare mode replaces the old per-location SS2022 public inbounds.
     for row in list(options):
         tag = str(row.get("tag") or "")
-        if tag.startswith(LEGACY_MANAGED_PREFIX) or (tag == CDN_MANAGED_TAG and not enabled):
+        if tag.startswith(LEGACY_MANAGED_PREFIX) or (_is_managed_cdn_row(row) and not enabled):
             if row.get("id") is not None:
                 client.delete_inbound(int(row["id"]))
                 removed += 1
 
     if not enabled:
-        return {"created": 0, "updated": 0, "removed": removed, "cdn_clients": 0}
+        return {
+            "created": 0,
+            "updated": 0,
+            "removed": removed,
+            "cdn_clients": 0,
+            "cdn_inbound_tag": "",
+            "cdn_port": desired_port,
+        }
 
     if removed:
         options = client.list_inbounds()
+        managed_rows = [row for row in options if _is_managed_cdn_row(row)]
+        existing = next(
+            (row for row in managed_rows if int(row.get("port") or 0) == desired_port),
+            None,
+        )
 
+    client.settings.cdn_port = desired_port
     cert_files = client.get_web_cert_files()
     expected = build_cdn_inbound_payload(enabled, client.settings, cert_files, decrypt_password)
-    existing = next((row for row in options if str(row.get("tag") or "") == CDN_MANAGED_TAG), None)
+
     if existing is None:
         client.add_inbound(expected)
-        return {"created": 1, "updated": 0, "removed": removed, "cdn_clients": len(enabled)}
+        refreshed = client.list_inbounds()
+        created_row = next(
+            (
+                row for row in refreshed
+                if _is_managed_cdn_row(row)
+                and int(row.get("port") or 0) == desired_port
+            ),
+            None,
+        )
+        actual_tag = str((created_row or {}).get("tag") or CDN_MANAGED_TAG)
+        return {
+            "created": 1,
+            "updated": 0,
+            "removed": removed,
+            "cdn_clients": len(enabled),
+            "cdn_inbound_tag": actual_tag,
+            "cdn_port": desired_port,
+        }
 
+    actual_tag = str(existing.get("tag") or CDN_MANAGED_TAG)
+    expected["tag"] = actual_tag
     if existing.get("id") is None:
-        return {"created": 0, "updated": 0, "removed": removed, "cdn_clients": len(enabled)}
+        return {
+            "created": 0,
+            "updated": 0,
+            "removed": removed,
+            "cdn_clients": len(enabled),
+            "cdn_inbound_tag": actual_tag,
+            "cdn_port": desired_port,
+        }
 
     current = client.get_inbound(int(existing["id"]))
     if not cdn_inbound_matches(current, expected):
         client.update_inbound(int(existing["id"]), expected)
-        return {"created": 0, "updated": 1, "removed": removed, "cdn_clients": len(enabled)}
-    return {"created": 0, "updated": 0, "removed": removed, "cdn_clients": len(enabled)}
+        return {
+            "created": 0,
+            "updated": 1,
+            "removed": removed,
+            "cdn_clients": len(enabled),
+            "cdn_inbound_tag": actual_tag,
+            "cdn_port": desired_port,
+        }
+    return {
+        "created": 0,
+        "updated": 0,
+        "removed": removed,
+        "cdn_clients": len(enabled),
+        "cdn_inbound_tag": actual_tag,
+        "cdn_port": desired_port,
+    }
 
 
 def managed_cdn_client_uri(location: dict[str, Any], settings: Any, decrypt_password) -> str:

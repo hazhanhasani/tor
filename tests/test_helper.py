@@ -12,7 +12,8 @@ from torpanel.helper import gateway_config, validation_temp_path
 from torpanel.security import encrypt_secret
 
 
-def test_gateway_blocks_udp_and_routes_tcp_to_tor():
+def test_gateway_blocks_udp_and_routes_tcp_to_tor(monkeypatch):
+    monkeypatch.setattr(helper, "get_setting", lambda key, default="": default)
     loc = {
         "slug": "de-test", "gateway_port": 31001, "socks_port": 19050,
         "ss_method": "2022-blake3-aes-128-gcm",

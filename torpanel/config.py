@@ -46,6 +46,18 @@ UPDATER_CMD = os.getenv(
 
 PANEL_BIND = os.getenv("TORPANEL_BIND", "0.0.0.0")
 PANEL_PORT = int(os.getenv("TORPANEL_PORT", "8787"))
+PANEL_TLS_ENABLED = os.getenv("TORPANEL_TLS_ENABLED", "0") == "1"
+PANEL_TLS_CERTFILE = os.getenv(
+    "TORPANEL_TLS_CERTFILE", "/etc/tor-location-manager/tls/panel.crt"
+)
+PANEL_TLS_KEYFILE = os.getenv(
+    "TORPANEL_TLS_KEYFILE", "/etc/tor-location-manager/tls/panel.key"
+)
+PANEL_PUBLIC_HOST = os.getenv("TORPANEL_PUBLIC_HOST", "").strip().lower()
+TLS_HELPER_CMD = os.getenv(
+    "TORPANEL_TLS_HELPER_CMD",
+    "sudo -n /opt/tor-location-manager/venv/bin/python -m torpanel.helper panel-tls-sync --restart",
+)
 ADMIN_USERNAME = os.getenv("TORPANEL_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD_HASH = os.getenv("TORPANEL_ADMIN_PASSWORD_HASH", "")
 FLASK_SECRET_KEY = os.getenv("TORPANEL_FLASK_SECRET_KEY", "")

@@ -184,6 +184,7 @@ install -m 0755 "$APP_DIR/scripts/install-warp" /usr/local/sbin/tor-location-man
 install -m 0644 "$APP_DIR/systemd/tor-location@.service" /etc/systemd/system/tor-location@.service
 install -m 0644 "$APP_DIR/systemd/tor-location-gateway.service" /etc/systemd/system/tor-location-gateway.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel.service" /etc/systemd/system/tor-location-panel.service
+install -m 0644 "$APP_DIR/systemd/tor-location-panel-redirect.service" /etc/systemd/system/tor-location-panel-redirect.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel-tls-sync.service" /etc/systemd/system/tor-location-panel-tls-sync.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel-tls-sync.timer" /etc/systemd/system/tor-location-panel-tls-sync.timer
 
@@ -278,8 +279,10 @@ chmod -R 0755 "$ETC_DIR/instances"
 
 systemctl daemon-reload
 systemctl enable tor-location-panel.service >/dev/null
+systemctl enable tor-location-panel-redirect.service >/dev/null
 systemctl enable --now tor-location-panel-tls-sync.timer >/dev/null
 systemctl restart tor-location-panel.service
+systemctl restart tor-location-panel-redirect.service || true
 
 echo "[6/8] Running panel health check..."
 PANEL_PORT="$(awk -F= '$1=="TORPANEL_PORT"{print $2}' "$ENV_FILE" | tail -1)"

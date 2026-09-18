@@ -733,6 +733,35 @@ def make_app() -> Flask:
             flash(f"خواندن Inboundهای PasarGuard ممکن نشد: {exc}", "warning")
             return []
 
+    def next_gateway_port(exclude_location_id: int | None = None) -> int:
+        used: set[int] = {8787}
+        for loc in list_locations():
+            if exclude_location_id and int(loc["id"]) == int(exclude_location_id):
+                continue
+            for key in ("gateway_port", "socks_port", "xui_inbound_port"):
+                value = int(loc.get(key) or 0)
+                if value:
+                    used.add(value)
+        for link in list_tunnel_links():
+            for key in ("foreign_wg_port", "iran_frp_control_port", "iran_frp_proxy_port"):
+                value = int(link.get(key) or 0)
+                if value:
+                    used.add(value)
+        for key in ("xui_cdn_port", "panel_tls_port"):
+            try:
+                value = int(get_setting(key, "0") or 0)
+            except ValueError:
+                value = 0
+            if value:
+                used.add(value)
+        for port in range(31000, 40000):
+            if port not in used:
+                return port
+        for port in range(40001, 60000):
+            if port not in used:
+                return port
+        raise ValueError("پورت آزاد برای Tor Gateway پیدا نشد.")
+
     def validate_location_form(existing_id: int | None = None):
         name = request.form.get("name", "").strip()
         country_code = request.form.get("country_code", "").strip().upper()
@@ -745,13 +774,24 @@ def make_app() -> Flask:
             raise ValueError("نام لوکیشن الزامی است.")
         if not re.fullmatch(r"[A-Z]{2}", country_code):
             raise ValueError("کد کشور باید دو حرفی باشد؛ مانند DE یا NL.")
-        try:
-            gateway_port = int(gateway_port_raw)
-        except ValueError:
-            raise ValueError("پورت Gateway معتبر نیست.")
-        if not 1024 <= gateway_port <= 65535:
-            raise ValueError("پورت Gateway باید بین 1024 و 65535 باشد.")
-        if get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare":
+        cloudflare_mode = get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
+        existing = get_location(existing_id) if existing_id else None
+        if cloudflare_mode:
+            if existing and int(existing.get("gateway_port") or 0):
+                gateway_port = int(existing["gateway_port"])
+            else:
+                gateway_port = next_gateway_port(existing_id)
+        elif gateway_port_raw:
+            try:
+                gateway_port = int(gateway_port_raw)
+            except ValueError:
+                raise ValueError("پورت Gateway معتبر نیست.")
+            if not 1024 <= gateway_port <= 65535:
+                raise ValueError("پورت Gateway باید بین 1024 و 65535 باشد.")
+        else:
+            gateway_port = next_gateway_port(existing_id)
+
+        if cloudflare_mode:
             # Cloudflare mode uses one shared TLS/WebSocket inbound for every
             # location, so per-location public inbound ports are intentionally disabled.
             xui_inbound_port = 0
@@ -768,7 +808,6 @@ def make_app() -> Flask:
             xui_inbound_port = 0
 
         locations = list_locations()
-        existing = get_location(existing_id) if existing_id else None
         existing_slug = str(existing.get("slug")) if existing else None
         for loc in locations:
             if existing_id and loc["id"] == existing_id:
@@ -806,12 +845,23 @@ def make_app() -> Flask:
                     "inbound_tags": inbound_tags, "enabled": enabled,
                 })
                 set_pasarguard_tor_tags(slug, pg_tags)
-                apply_runtime()
-                results = sync_all_panels(list_locations(), decrypt_secret)
-                flash_sync_results(results, "لوکیشن ساخته شد و Routeها Reconcile شدند.")
-                return redirect(url_for("index"))
-            except (ValueError, sqlite3.IntegrityError, RuntimeError) as exc:
+            except (ValueError, sqlite3.IntegrityError) as exc:
                 flash(str(exc), "danger")
+            else:
+                # The Location is already committed at this point. A runtime/API
+                # failure must not make the create form look as if nothing was
+                # saved; that caused retries to hit "port already used".
+                try:
+                    apply_runtime()
+                    results = sync_all_panels(list_locations(), decrypt_secret)
+                    flash_sync_results(results, "لوکیشن ساخته شد و Routeها Reconcile شدند.")
+                except Exception as exc:
+                    flash(
+                        f"لوکیشن ساخته و ذخیره شد، اما Reconcile کامل نشد: {exc}. "
+                        "از صفحه لوکیشن‌ها می‌توانی دوباره Sync را اجرا کنی.",
+                        "warning",
+                    )
+                return redirect(url_for("index"))
         return render_template(
             "location_form.html",
             location=None,

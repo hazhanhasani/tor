@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from .cloudflare_origin import CloudflareOriginError, issue_origin_certificate
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links, set_setting
 from .security import decrypt_secret
@@ -28,6 +29,8 @@ PANEL_TLS_CERT = PANEL_TLS_DIR / "panel.crt"
 PANEL_TLS_KEY = PANEL_TLS_DIR / "panel.key"
 PANEL_TLS_FALLBACK_CERT = PANEL_TLS_DIR / "cloudflare-origin-fallback.crt"
 PANEL_TLS_FALLBACK_KEY = PANEL_TLS_DIR / "cloudflare-origin-fallback.key"
+PANEL_TLS_CF_ORIGIN_CERT = PANEL_TLS_DIR / "cloudflare-origin-ca.crt"
+PANEL_TLS_CF_ORIGIN_KEY = PANEL_TLS_DIR / "cloudflare-origin-ca.key"
 PANEL_CREDENTIALS_FILE = Path("/root/tor-location-manager-credentials.txt")
 
 
@@ -557,6 +560,64 @@ def _resolve_panel_tls_source(
     )
 
 
+def _origin_ca_cert_is_fresh(public_host: str) -> bool:
+    try:
+        cert_bytes = PANEL_TLS_CF_ORIGIN_CERT.read_bytes()
+        key_bytes = PANEL_TLS_CF_ORIGIN_KEY.read_bytes()
+        _validate_tls_pair(cert_bytes, key_bytes, public_host)
+        cert = x509.load_pem_x509_certificate(cert_bytes)
+        not_after = getattr(cert, "not_valid_after_utc", None)
+        if not_after is None:
+            not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        return not_after - datetime.now(timezone.utc) > timedelta(days=90)
+    except Exception:
+        return False
+
+
+def _ensure_cloudflare_origin_ca(public_host: str) -> tuple[Path, Path, str]:
+    if _origin_ca_cert_is_fresh(public_host):
+        return PANEL_TLS_CF_ORIGIN_CERT, PANEL_TLS_CF_ORIGIN_KEY, "cloudflare-origin-ca"
+
+    encrypted_token = get_setting("panel_tls_cloudflare_api_token", "") or ""
+    token = decrypt_secret(encrypted_token) if encrypted_token else ""
+    if not token:
+        raise RuntimeError(
+            "Cloudflare Origin CA API Token ثبت نشده است. "
+            "برای Full (strict) یک API Token با مجوز SSL and Certificates:Edit وارد کنید."
+        )
+    try:
+        issued = issue_origin_certificate(public_host, token)
+    except CloudflareOriginError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    PANEL_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(PANEL_TLS_DIR, 0o750)
+    ensure_group(PANEL_TLS_DIR, "torpanel")
+    atomic_write_bytes(
+        PANEL_TLS_CF_ORIGIN_CERT,
+        issued.certificate_pem.encode("utf-8"),
+        0o644,
+    )
+    atomic_write_bytes(
+        PANEL_TLS_CF_ORIGIN_KEY,
+        issued.private_key_pem.encode("utf-8"),
+        0o640,
+    )
+    ensure_group(PANEL_TLS_CF_ORIGIN_CERT, "torpanel")
+    ensure_group(PANEL_TLS_CF_ORIGIN_KEY, "torpanel")
+    _validate_tls_pair(
+        PANEL_TLS_CF_ORIGIN_CERT.read_bytes(),
+        PANEL_TLS_CF_ORIGIN_KEY.read_bytes(),
+        public_host,
+    )
+    set_setting("panel_tls_cloudflare_origin_id", issued.certificate_id)
+    set_setting("panel_tls_cloudflare_origin_expires", issued.expires_on)
+    # The 15-year Origin CA certificate does not need the API token for routine
+    # operation. Clear it after successful issuance to minimize secret retention.
+    set_setting("panel_tls_cloudflare_api_token", "")
+    return PANEL_TLS_CF_ORIGIN_CERT, PANEL_TLS_CF_ORIGIN_KEY, "cloudflare-origin-ca"
+
+
 def _fallback_cert_is_fresh(public_host: str) -> bool:
     try:
         cert_bytes = PANEL_TLS_FALLBACK_CERT.read_bytes()
@@ -665,6 +726,7 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     cert_setting = (get_setting("panel_tls_source_cert", "") or "").strip()
     key_setting = (get_setting("panel_tls_source_key", "") or "").strip()
     allow_fallback = (get_setting("panel_tls_cloudflare_fallback", "1") or "1") == "1"
+    use_origin_ca = (get_setting("panel_tls_cloudflare_origin_ca", "0") or "0") == "1"
     source_error = ""
     try:
         if not cert_setting or not key_setting:
@@ -675,10 +737,14 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
         cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
     except Exception as exc:
         source_error = str(exc)
-        if not allow_fallback:
-            raise
-        cert_path, key_path, tls_source = _ensure_cloudflare_fallback_cert(public_host)
-        cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
+        if use_origin_ca:
+            cert_path, key_path, tls_source = _ensure_cloudflare_origin_ca(public_host)
+            cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
+        else:
+            if not allow_fallback:
+                raise
+            cert_path, key_path, tls_source = _ensure_cloudflare_fallback_cert(public_host)
+            cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
 
     PANEL_TLS_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(PANEL_TLS_DIR, 0o750)
@@ -709,6 +775,11 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
             "گواهی خصوصی x-ui روی این Host قابل خواندن نبود؛ یک Origin TLS محلی ECDSA ساخته شد. "
             "برای دامنه Proxied کلادفلر، SSL/TLS Encryption Mode را روی Full قرار دهید؛ "
             "Full (strict) با این گواهی self-signed کار نمی‌کند."
+        )
+    elif tls_source == "cloudflare-origin-ca":
+        warning = (
+            "Cloudflare Origin CA فعال است؛ این حالت با Full (strict) سازگار است. "
+            "رکورد DNS باید Proxied باشد."
         )
     return {
         "enabled": True,

@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic x-ui TLS certificate sync for Tor Location Manager
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=tor-location-panel-tls-sync.service
+
+[Install]
+WantedBy=timers.target

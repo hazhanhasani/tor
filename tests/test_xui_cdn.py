@@ -263,3 +263,115 @@ def test_cdn_routes_can_use_actual_generated_inbound_tag():
     tor_rule = next(rule for rule in rules if rule.get("user") == [managed_client_email(loc)])
     assert warp_rule["inboundTag"] == ["in-2087-tcp"]
     assert tor_rule["inboundTag"] == ["in-2087-tcp"]
+
+
+def test_reconcile_moves_existing_managed_inbound_away_from_conflicting_port(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(xui_cdn, "set_setting", lambda key, value: saved.__setitem__(key, value))
+    settings = cdn_settings()
+    settings.cdn_port = 8443
+
+    class FakeClient:
+        def __init__(self):
+            self.settings = settings
+            self.updated = None
+            self.rows = [
+                {
+                    "id": 12,
+                    "tag": xui_cdn.CDN_MANAGED_TAG,
+                    "remark": xui_cdn.CDN_MANAGED_REMARK,
+                    "protocol": "vless",
+                    "port": 10000,
+                },
+                {
+                    "id": 7,
+                    "tag": "manual-8443",
+                    "remark": "Manual inbound",
+                    "protocol": "vless",
+                    "port": 8443,
+                },
+            ]
+
+        def list_inbounds(self):
+            return list(self.rows)
+
+        def get_web_cert_files(self):
+            return {
+                "webCertFile": "/root/cert/example.com/fullchain.pem",
+                "webKeyFile": "/root/cert/example.com/privkey.pem",
+            }
+
+        def get_inbound(self, inbound_id):
+            assert inbound_id == 12
+            return {
+                "id": 12,
+                "tag": xui_cdn.CDN_MANAGED_TAG,
+                "remark": xui_cdn.CDN_MANAGED_REMARK,
+                "protocol": "vless",
+                "port": 10000,
+                "enable": True,
+                "settings": {},
+                "streamSettings": {},
+                "sniffing": {},
+            }
+
+        def update_inbound(self, inbound_id, payload):
+            self.updated = (inbound_id, payload)
+
+    client = FakeClient()
+    result = reconcile_cdn_inbound(client, [location()], fake_decrypt)
+    assert result["updated"] == 1
+    assert result["cdn_port"] == 443
+    assert client.settings.cdn_port == 443
+    assert client.updated[0] == 12
+    assert client.updated[1]["port"] == 443
+    assert saved["xui_cdn_port"] == "443"
+
+
+def test_reconcile_retries_when_port_becomes_busy_during_add(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(xui_cdn, "set_setting", lambda key, value: saved.__setitem__(key, value))
+
+    class FakeClient:
+        settings = cdn_settings()
+
+        def __init__(self):
+            self.rows = []
+            self.add_calls = 0
+
+        def list_inbounds(self):
+            return list(self.rows)
+
+        def get_web_cert_files(self):
+            return {
+                "webCertFile": "/root/cert/example.com/fullchain.pem",
+                "webKeyFile": "/root/cert/example.com/privkey.pem",
+            }
+
+        def add_inbound(self, payload):
+            self.add_calls += 1
+            if self.add_calls == 1:
+                self.rows.append({
+                    "id": 44,
+                    "tag": "racing-inbound",
+                    "remark": "Created by another operation",
+                    "protocol": "vless",
+                    "port": payload["port"],
+                })
+                raise RuntimeError(f"Port {payload['port']} already exists")
+            self.rows.append({
+                "id": 45,
+                "tag": payload["tag"],
+                "remark": payload["remark"],
+                "protocol": payload["protocol"],
+                "port": payload["port"],
+            })
+
+    client = FakeClient()
+    result = reconcile_cdn_inbound(client, [location()], fake_decrypt)
+    assert client.add_calls == 2
+    assert result["created"] == 1
+    assert result["cdn_port"] == 443
+    assert saved["xui_cdn_port"] == "443"
+    assert any(row["id"] == 45 and row["port"] == 443 for row in client.rows)
+

@@ -194,3 +194,48 @@ def test_wireguard_keypair_is_raw_base64_32_bytes():
     private_key, public_key = XUIClient._wireguard_keypair()
     assert len(base64.b64decode(private_key)) == 32
     assert len(base64.b64decode(public_key)) == 32
+
+
+def test_ensure_warp_outbound_repairs_stale_native_outbound(monkeypatch):
+    client = XUIClient(XUISettings(
+        base_url="https://panel.example.com/",
+        api_token="token",
+        gateway_host="203.0.113.5",
+        verify_tls=True,
+    ))
+    data = {
+        "private_key": "fresh-secret",
+        "client_id": base64.b64encode(bytes([1, 2, 3])).decode(),
+    }
+    warp_cfg = {
+        "config": {
+            "client_id": data["client_id"],
+            "interface": {"addresses": {"v4": "172.16.0.2"}},
+            "peers": [{
+                "public_key": "fresh-peer",
+                "endpoint": {"host": "engage.cloudflareclient.com:2408"},
+            }],
+        }
+    }
+    monkeypatch.setattr(client, "warp_data", lambda: data)
+    monkeypatch.setattr(client, "warp_config", lambda: warp_cfg)
+
+    original = {
+        "outbounds": [{
+            "tag": "warp",
+            "protocol": "wireguard",
+            "settings": {
+                "secretKey": "stale-secret",
+                "sockopt": {"mark": 7},
+            },
+        }],
+        "routing": {"rules": []},
+    }
+    updated, changed = client.ensure_warp_outbound(original)
+    assert changed is True
+    outbound = updated["outbounds"][0]
+    assert outbound["settings"]["secretKey"] == "fresh-secret"
+    assert outbound["settings"]["peers"][0]["publicKey"] == "fresh-peer"
+    assert outbound["settings"]["sockopt"] == {"mark": 7}
+    assert original["outbounds"][0]["settings"]["secretKey"] == "stale-secret"
+

@@ -309,6 +309,20 @@ class XUIClient:
             },
         }
 
+    @staticmethod
+    def _merge_warp_outbound(existing: dict[str, Any], refreshed: dict[str, Any]) -> dict[str, Any]:
+        """Refresh native WARP credentials while preserving unrelated user settings."""
+        merged = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+        merged["tag"] = "warp"
+        merged["protocol"] = "wireguard"
+        previous_settings = merged.get("settings")
+        settings = copy.deepcopy(previous_settings) if isinstance(previous_settings, dict) else {}
+        fresh_settings = refreshed.get("settings")
+        if isinstance(fresh_settings, dict):
+            settings.update(copy.deepcopy(fresh_settings))
+        merged["settings"] = settings
+        return merged
+
     def ensure_warp_outbound(self, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         updated = copy.deepcopy(config)
         outbounds = updated.setdefault("outbounds", [])
@@ -317,25 +331,24 @@ class XUIClient:
              if isinstance(row, dict) and str(row.get("tag") or "") == "warp"),
             -1,
         )
-        if existing_index >= 0:
-            existing = outbounds[existing_index]
-            if str(existing.get("protocol") or "").lower() == "wireguard":
-                return updated, False
 
         data = self.warp_data()
-        warp_cfg = None
         if data:
-            try:
-                warp_cfg = self.warp_config()
-            except XUIError:
-                warp_cfg = None
-        if not data or not warp_cfg:
-            data, warp_cfg = self.warp_register()
-        outbound = self.build_warp_outbound(data, warp_cfg)
-        if existing_index >= 0:
-            outbounds[existing_index] = outbound
+            warp_cfg = self.warp_config()
+            if not warp_cfg:
+                raise XUIError("WARP در 3x-ui ثبت شده اما Config آن قابل دریافت نیست.")
         else:
-            outbounds.append(outbound)
+            data, warp_cfg = self.warp_register()
+
+        refreshed = self.build_warp_outbound(data, warp_cfg)
+        if existing_index >= 0:
+            existing = outbounds[existing_index]
+            merged = self._merge_warp_outbound(existing, refreshed)
+            changed = merged != existing
+            outbounds[existing_index] = merged
+            return updated, changed
+
+        outbounds.append(refreshed)
         return updated, True
 
     def test_outbound(self, outbound: dict[str, Any], all_outbounds: list[dict[str, Any]] | None = None) -> dict[str, Any]:

@@ -327,12 +327,30 @@ def _xui_web_port(settings: Any) -> int:
         return 0
 
 
-def _pick_free_cdn_port(options: list[dict[str, Any]], settings: Any, preferred: int) -> int:
-    used = {
-        int(row.get("port") or 0)
-        for row in options
-        if int(row.get("port") or 0) > 0 and not _is_managed_cdn_row(row)
-    }
+def _row_id(row: dict[str, Any]) -> int | None:
+    try:
+        return int(row.get("id")) if row.get("id") is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_free_cdn_port(
+    options: list[dict[str, Any]],
+    settings: Any,
+    preferred: int,
+    ignore_ids: set[int] | None = None,
+) -> int:
+    ignored = ignore_ids or set()
+    used: set[int] = set()
+    for row in options:
+        if _row_id(row) in ignored:
+            continue
+        try:
+            port = int(row.get("port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            used.add(port)
     panel_port = _xui_web_port(settings)
     if panel_port:
         used.add(panel_port)
@@ -343,6 +361,16 @@ def _pick_free_cdn_port(options: list[dict[str, Any]], settings: Any, preferred:
     raise CDNProfileError(
         "هیچ پورت HTTPS آزاد سازگار با Cloudflare برای Inbound مدیریت‌شده پیدا نشد."
     )
+
+
+def _is_port_conflict_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    has_port = "port" in message or "پورت" in message
+    conflict_words = (
+        "already", "exists", "exist", "used", "in use", "occupied",
+        "duplicate", "استفاده", "موجود", "اشغال",
+    )
+    return has_port and any(word in message for word in conflict_words)
 
 
 def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
@@ -367,13 +395,17 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
             client.settings.cdn_port = existing_port
             set_setting("xui_cdn_port", str(existing_port))
 
+    existing_id = _row_id(existing) if existing else None
     conflicts = [
         row for row in options
-        if not _is_managed_cdn_row(row)
-        and int(row.get("port") or 0) == desired_port
+        if int(row.get("port") or 0) == desired_port
+        and (existing_id is None or _row_id(row) != existing_id)
     ]
-    if conflicts and existing is None:
-        chosen = _pick_free_cdn_port(options, client.settings, desired_port)
+    if conflicts:
+        ignored = {existing_id} if existing_id is not None else set()
+        chosen = _pick_free_cdn_port(
+            options, client.settings, desired_port, ignore_ids=ignored
+        )
         if chosen != desired_port:
             desired_port = chosen
             client.settings.cdn_port = chosen
@@ -410,7 +442,25 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
     expected = build_cdn_inbound_payload(enabled, client.settings, cert_files, decrypt_password)
 
     if existing is None:
-        client.add_inbound(expected)
+        try:
+            client.add_inbound(expected)
+        except Exception as exc:
+            if not _is_port_conflict_error(exc):
+                raise
+            refreshed_after_conflict = client.list_inbounds()
+            chosen = _pick_free_cdn_port(
+                refreshed_after_conflict, client.settings, desired_port
+            )
+            if chosen == desired_port:
+                raise
+            desired_port = chosen
+            client.settings.cdn_port = chosen
+            set_setting("xui_cdn_port", str(chosen))
+            expected = build_cdn_inbound_payload(
+                enabled, client.settings, cert_files, decrypt_password
+            )
+            client.add_inbound(expected)
+
         refreshed = client.list_inbounds()
         created_row = next(
             (
@@ -444,7 +494,28 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
 
     current = client.get_inbound(int(existing["id"]))
     if not cdn_inbound_matches(current, expected):
-        client.update_inbound(int(existing["id"]), expected)
+        try:
+            client.update_inbound(int(existing["id"]), expected)
+        except Exception as exc:
+            if not _is_port_conflict_error(exc):
+                raise
+            refreshed_after_conflict = client.list_inbounds()
+            chosen = _pick_free_cdn_port(
+                refreshed_after_conflict,
+                client.settings,
+                desired_port,
+                ignore_ids={int(existing["id"])},
+            )
+            if chosen == desired_port:
+                raise
+            desired_port = chosen
+            client.settings.cdn_port = chosen
+            set_setting("xui_cdn_port", str(chosen))
+            expected = build_cdn_inbound_payload(
+                enabled, client.settings, cert_files, decrypt_password
+            )
+            expected["tag"] = actual_tag
+            client.update_inbound(int(existing["id"]), expected)
         return {
             "created": 0,
             "updated": 1,

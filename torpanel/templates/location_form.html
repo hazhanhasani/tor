@@ -4,7 +4,15 @@
 {% block content %}
 <section class="page-head">
   <div><div class="eyebrow">LOCATION WIZARD</div><h1>{{ 'ویرایش لوکیشن' if location else 'لوکیشن جدید' }}</h1><p>کشور، پورت‌ها و Routeهای 3x-ui و PasarGuard را مرحله‌به‌مرحله تنظیم کنید.</p></div>
-  <a class="button" href="{{ url_for('index') }}">بازگشت به لوکیشن‌ها</a>
+  <div class="page-actions">
+    <a class="button" href="{{ url_for('index') }}">بازگشت به لوکیشن‌ها</a>
+    {% if location %}
+    <form method="post" action="{{ url_for('location_delete', location_id=location.id) }}" onsubmit="return confirm('لوکیشن {{ location.name }} و Routeهای مدیریت‌شده آن حذف شود؟')">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="button danger" type="submit">{{ icon('trash') }} حذف لوکیشن</button>
+    </form>
+    {% endif %}
+  </div>
 </section>
 
 <form method="post" data-wizard>

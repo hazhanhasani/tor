@@ -581,13 +581,16 @@ def make_app() -> Flask:
             cfg = xui_current_settings()
             client = XUIClient(cfg)
             config = client.get_xray_config()
+            config, repaired = client.ensure_warp_outbound(config)
+            if repaired:
+                client.update_xray_config(config)
             outbounds = config.get("outbounds") if isinstance(config.get("outbounds"), list) else []
             warp = next(
                 (row for row in outbounds if isinstance(row, dict) and str(row.get("tag") or "") == "warp"),
                 None,
             )
             if not warp:
-                raise XUIError("Outbound با tag=warp هنوز در 3x-ui ساخته نشده است؛ تنظیمات را ذخیره کنید.")
+                raise XUIError("Outbound با tag=warp در 3x-ui قابل ایجاد یا بازیابی نبود.")
             result = client.test_outbound(warp, outbounds)
             details = []
             for key in ("ipv4", "ipv6", "country", "warp"):

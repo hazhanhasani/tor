@@ -44,34 +44,42 @@
           <label class="field"><span>سیاست WARP</span>
             <select name="xui_warp_mode">
               <option value="domains" {% if xui_warp_mode == 'domains' %}selected{% endif %}>فقط دامنه‌های انتخابی</option>
-              <option value="all" {% if xui_warp_mode == 'all' %}selected{% endif %}>تمام ترافیک Inboundهای انتخابی</option>
+              <option value="all" {% if xui_warp_mode == 'all' %}selected{% endif %}>تمام ترافیک Inboundهای انتخابی (WARP کامل)</option>
             </select>
-            <small>برای حفظ Tor روی بقیه سایت‌ها، حالت دامنه‌های انتخابی پیشنهاد می‌شود.</small>
+            <small>حالت «تمام ترافیک» بیشترین یکپارچگی IP را برای سایت‌های حساس/Challenge می‌دهد؛ حالت دامنه‌ای فقط سرویس‌های انتخابی و Cloudflare Challenge را از WARP عبور می‌دهد.</small>
           </label>
 
-          <label class="field"><span>Inboundهای تحت کنترل WARP</span>
-            <select name="xui_warp_inbound_tags" multiple size="5">
-              {% for row in xui_warp_available_inbounds %}
-              <option value="{{ row.tag }}" {% if row.tag in xui_warp_inbound_tags %}selected{% endif %}>{{ row.remark or row.tag }} · {{ row.tag }}{% if row.port %} · :{{ row.port }}{% endif %}</option>
-              {% endfor %}
-            </select>
-            <small>در حالت CDN معمولاً <code>torloc-cdn</code> را انتخاب کن. اگر هیچ موردی انتخاب نشود و CDN فعال باشد، همین Inbound خودکار انتخاب می‌شود.</small>
-          </label>
+          <div class="field"><span>Inboundهای تحت کنترل WARP</span>
+            <details class="multi-select-dropdown">
+              <summary>انتخاب Inboundها · {{ xui_warp_inbound_tags|length }} انتخاب‌شده</summary>
+              <div class="multi-select-options">
+                {% for row in xui_warp_available_inbounds %}
+                <label class="check row"><input type="checkbox" name="xui_warp_inbound_tags" value="{{ row.tag }}" {% if row.tag in xui_warp_inbound_tags %}checked{% endif %}><span><b>{{ row.remark or row.tag }}</b><small>{{ row.tag }}{% if row.port %} · :{{ row.port }}{% endif %}</small></span></label>
+                {% else %}
+                <div class="callout">Inbound قابل انتخابی از 3x-ui دریافت نشد.</div>
+                {% endfor %}
+              </div>
+            </details>
+            <small>در حالت CDN، Inbound مشترک مدیریت‌شده خودکار انتخاب می‌شود؛ در صورت نیاز چند Inbound را هم‌زمان تیک بزن.</small>
+          </div>
         </div>
 
         <div class="two" style="margin-top:13px">
-          <label class="field"><span>لیست آماده سایت‌های تحت WARP</span>
-            <select name="xui_warp_domain_presets" multiple size="7">
-              {% for domain, label in xui_warp_domain_presets %}
-              <option value="{{ domain }}" {% if domain in xui_warp_domains %}selected{% endif %}>{{ label }} — {{ domain }}</option>
-              {% endfor %}
-            </select>
-            <small>چند مورد را هم‌زمان می‌توانی انتخاب کنی.</small>
-          </label>
+          <div class="field"><span>لیست آماده سایت‌ها و سرویس‌های تحت WARP</span>
+            <details class="multi-select-dropdown">
+              <summary>انتخاب سرویس‌ها · لیست 3x-ui / Xray</summary>
+              <div class="multi-select-options">
+                {% for domain, label in xui_warp_domain_presets %}
+                <label class="check row"><input type="checkbox" name="xui_warp_domain_presets" value="{{ domain }}" {% if domain in xui_warp_domains %}checked{% endif %}><span><b>{{ label }}</b><small>{{ domain }}</small></span></label>
+                {% endfor %}
+              </div>
+            </details>
+            <small>برای سرویس‌های اصلی از <code>geosite</code> خود Xray استفاده می‌شود تا همه دامنه‌های وابسته پوشش داده شوند.</small>
+          </div>
 
           <label class="field"><span>دامنه‌های سفارشی</span>
             <textarea name="xui_warp_custom_domains" rows="7" class="mono" placeholder="example.com&#10;site.ir">{% for domain in xui_warp_domains %}{{ domain }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
-            <small>هر دامنه یک خط. زیر‌دامنه‌ها هم پوشش داده می‌شوند. <code>challenges.cloudflare.com</code> به‌صورت خودکار کنار دامنه‌های انتخابی از همان WARP Exit عبور می‌کند.</small>
+            <small>هر دامنه یا Token مثل <code>geosite:openai</code> یک خط. <code>challenges.cloudflare.com</code> همیشه خودکار کنار انتخاب‌ها از همان WARP Exit عبور می‌کند.</small>
           </label>
         </div>
 
@@ -108,7 +116,7 @@
       <div class="actions">
         <button class="button primary" type="submit">{{ icon('check') }} ذخیره 3x-ui و Tor</button>
         <button class="button" type="submit" formaction="{{ url_for('settings_test') }}">{{ icon('pulse') }} تست 3x-ui</button>
-        <button class="button" type="submit" formaction="{{ url_for('settings_warp_test') }}">{{ icon('wifi') }} تست WARP</button>
+        <button class="button" type="submit" formaction="{{ url_for('settings_warp_test') }}">{{ icon('wifi') }} فعال‌سازی/تعمیر و تست WARP</button>
       </div>
     </form>
   </section>

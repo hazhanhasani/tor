@@ -5,21 +5,27 @@ from typing import Iterable
 
 import requests
 
+
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
 )
+GEOSITE_RE = re.compile(r"^geosite:[A-Za-z0-9][A-Za-z0-9._@-]*$", re.I)
 
-
-WARP_COMPANION_DOMAINS = ("challenges.cloudflare.com",)
+WARP_COMPANION_TOKENS = ("domain:challenges.cloudflare.com",)
 
 WARP_DOMAIN_PRESETS = (
-    ("check-host.net", "Check-Host"),
-    ("google.com", "Google"),
+    ("geosite:apple", "Apple"),
+    ("geosite:meta", "Meta / Instagram / Facebook"),
+    ("geosite:google", "Google"),
+    ("geosite:openai", "OpenAI / ChatGPT"),
+    ("geosite:spotify", "Spotify"),
+    ("geosite:netflix", "Netflix"),
+    ("geosite:reddit", "Reddit"),
+    ("geosite:speedtest", "Speedtest"),
     ("youtube.com", "YouTube"),
-    ("chatgpt.com", "ChatGPT"),
-    ("openai.com", "OpenAI"),
     ("github.com", "GitHub"),
     ("discord.com", "Discord"),
+    ("check-host.net", "Check-Host"),
 )
 
 
@@ -35,14 +41,18 @@ def normalize_warp_domains(raw: str | Iterable[str]) -> list[str]:
         value = str(item or "").strip().lower().rstrip(".")
         if not value or value.startswith("#"):
             continue
-        if value.startswith("https://") or value.startswith("http://"):
-            value = value.split("://", 1)[1].split("/", 1)[0]
-        if ":" in value and not value.startswith("["):
-            value = value.split(":", 1)[0]
-        if value.startswith("*."):
-            value = value[2:]
-        if not DOMAIN_RE.fullmatch(value):
-            raise WarpAssistError(f"دامنه WARP Assist معتبر نیست: {item}")
+        if value.startswith("geosite:"):
+            if not GEOSITE_RE.fullmatch(value):
+                raise WarpAssistError(f"لیست WARP معتبر نیست: {item}")
+        else:
+            if value.startswith("https://") or value.startswith("http://"):
+                value = value.split("://", 1)[1].split("/", 1)[0]
+            if ":" in value and not value.startswith("["):
+                value = value.split(":", 1)[0]
+            if value.startswith("*."):
+                value = value[2:]
+            if not DOMAIN_RE.fullmatch(value):
+                raise WarpAssistError(f"دامنه WARP Assist معتبر نیست: {item}")
         if value not in seen:
             seen.add(value)
             result.append(value)
@@ -51,11 +61,16 @@ def normalize_warp_domains(raw: str | Iterable[str]) -> list[str]:
 
 def xray_domain_rules(domains: Iterable[str]) -> list[str]:
     normalized = normalize_warp_domains(domains)
-    if normalized:
-        for domain in WARP_COMPANION_DOMAINS:
-            if domain not in normalized:
-                normalized.append(domain)
-    return [f"domain:{domain}" for domain in normalized]
+    rules: list[str] = []
+    for value in normalized:
+        token = value if value.startswith("geosite:") else f"domain:{value}"
+        if token not in rules:
+            rules.append(token)
+    if rules:
+        for token in WARP_COMPANION_TOKENS:
+            if token not in rules:
+                rules.append(token)
+    return rules
 
 
 def test_warp_proxy(port: int, timeout: int = 12) -> dict[str, str | bool]:

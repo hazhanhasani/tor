@@ -210,9 +210,16 @@ sudo /opt/tor-location-manager/venv/bin/python -m torpanel.helper panel-tls-disa
 
 پنل دوباره روی `http://SERVER_IP:8787` بالا می‌آید.
 
-اگر Private Key گواهی 3x-ui روی Host، Docker/Podman mount یا namespace پردازش x-ui/Xray/Reverse Proxy پیدا شود، همان Certificate به‌صورت امن Sync می‌شود. اگر پیدا نشود و **Cloudflare Fallback** روشن باشد، پروژه برای همان hostname یک Origin TLS محلی ECDSA می‌سازد تا پنل روی HTTPS بالا بیاید. در این حالت رکورد DNS باید Proxied باشد و Cloudflare SSL/TLS Encryption Mode روی **Full** قرار بگیرد؛ **Full (strict)** گواهی self-signed این fallback را قبول نمی‌کند. در Syncهای بعدی، اگر Certificate واقعی x-ui قابل خواندن شود، آن به‌صورت خودکار دوباره اولویت می‌گیرد.
+اگر Private Key گواهی 3x-ui روی Host، Docker/Podman mount یا namespace پردازش x-ui/Xray/Reverse Proxy پیدا شود، همان Certificate به‌صورت امن Sync می‌شود.
 
-> Cloudflare Fallback برای حل حالتی است که مرورگر گواهی Cloudflare Edge را می‌بیند ولی Private Key آن گواهی اصلاً روی Origin وجود ندارد. این fallback کلید Cloudflare Edge را استخراج یا کپی نمی‌کند.
+اگر Certificate واقعی قابل خواندن نباشد دو حالت وجود دارد:
+
+- **Cloudflare Origin CA**: حالت پیشنهادی برای Production. یک API Token با مجوز `SSL and Certificates: Edit` را فقط هنگام صدور وارد می‌کنید. پروژه کلید ECC را روی خود سرور تولید می‌کند، CSR را به API رسمی Cloudflare Origin CA می‌فرستد، Certificate را نصب می‌کند و پس از صدور موفق Token را از دیتابیس پاک می‌کند. این Certificate با **Full (strict)** سازگار است.
+- **Self-signed fallback**: فقط حالت اضطراری. پروژه یک Origin TLS محلی می‌سازد و Cloudflare باید روی **Full** باشد؛ **Full (strict)** در این حالت Error 526 می‌دهد.
+
+در Syncهای بعدی، اگر Certificate واقعی x-ui قابل خواندن شود، آن دوباره اولویت می‌گیرد. Origin CA صادرشده نیز تا نزدیک انقضا دوباره درخواست نمی‌شود.
+
+> Certificate مربوط به Cloudflare Edge و Private Key آن روی Origin قرار ندارد و پروژه تلاشی برای استخراج آن نمی‌کند. Origin CA روش درست Cloudflare برای نگه‌داشتن Full (strict) در این سناریو است.
 
 ## بروزرسانی از داخل پنل
 

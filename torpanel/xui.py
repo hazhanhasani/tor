@@ -10,9 +10,12 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import urllib3
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
 
 from .db import get_setting, set_location_xui_inbound_port
 from .security import decrypt_secret
+from .warp import xray_domain_rules
 from .xui_cdn import (
     CDN_MANAGED_TAG,
     reconcile_cdn_inbound,
@@ -221,6 +224,132 @@ class XUIClient:
             "outboundTestUrl": self.settings.outbound_test_url,
         })
 
+    def warp_data(self) -> dict[str, Any] | None:
+        obj = self._unwrap(self._request("POST", "/panel/api/xray/warp/data"))
+        return obj if isinstance(obj, dict) and obj else None
+
+    def warp_config(self) -> dict[str, Any] | None:
+        obj = self._unwrap(self._request("POST", "/panel/api/xray/warp/config"))
+        return obj if isinstance(obj, dict) and obj else None
+
+    @staticmethod
+    def _wireguard_keypair() -> tuple[str, str]:
+        private = x25519.X25519PrivateKey.generate()
+        private_raw = private.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        public_raw = private.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        return (
+            base64.b64encode(private_raw).decode("ascii"),
+            base64.b64encode(public_raw).decode("ascii"),
+        )
+
+    def warp_register(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        private_key, public_key = self._wireguard_keypair()
+        obj = self._unwrap(self._request(
+            "POST",
+            "/panel/api/xray/warp/reg",
+            data={"privateKey": private_key, "publicKey": public_key},
+        ))
+        if not isinstance(obj, dict):
+            raise XUIError("3x-ui پاسخ ثبت WARP نامعتبر برگرداند.")
+        data = obj.get("data")
+        config = obj.get("config")
+        if not isinstance(data, dict) or not isinstance(config, dict):
+            raise XUIError("3x-ui WARP ثبت شد اما data/config کامل برنگشت.")
+        return data, config
+
+    @staticmethod
+    def build_warp_outbound(data: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        cfg = config.get("config") if isinstance(config, dict) else None
+        if not isinstance(cfg, dict):
+            raise XUIError("پیکربندی WARP از 3x-ui ناقص است.")
+        peers = cfg.get("peers")
+        if not isinstance(peers, list) or not peers or not isinstance(peers[0], dict):
+            raise XUIError("Peer مربوط به WARP در پاسخ 3x-ui وجود ندارد.")
+        peer = peers[0]
+        interface = cfg.get("interface") if isinstance(cfg.get("interface"), dict) else {}
+        addresses = interface.get("addresses") if isinstance(interface.get("addresses"), dict) else {}
+        address: list[str] = []
+        if addresses.get("v4"):
+            address.append(f"{addresses['v4']}/32")
+        if addresses.get("v6"):
+            address.append(f"{addresses['v6']}/128")
+        client_id = str(cfg.get("client_id") or data.get("client_id") or "")
+        reserved: list[int] = []
+        if client_id:
+            try:
+                reserved = list(base64.b64decode(client_id))
+            except Exception:
+                reserved = []
+        endpoint = peer.get("endpoint")
+        if isinstance(endpoint, dict):
+            endpoint = endpoint.get("host")
+        endpoint = str(endpoint or "")
+        public_key = str(peer.get("public_key") or "")
+        secret_key = str(data.get("private_key") or "")
+        if not address or not endpoint or not public_key or not secret_key:
+            raise XUIError("اطلاعات WireGuard مربوط به WARP کامل نیست.")
+        return {
+            "tag": "warp",
+            "protocol": "wireguard",
+            "settings": {
+                "mtu": 1420,
+                "secretKey": secret_key,
+                "address": address,
+                "reserved": reserved,
+                "domainStrategy": "ForceIPv4v6",
+                "peers": [{"publicKey": public_key, "endpoint": endpoint}],
+                "noKernelTun": True,
+            },
+        }
+
+    def ensure_warp_outbound(self, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        updated = copy.deepcopy(config)
+        outbounds = updated.setdefault("outbounds", [])
+        existing_index = next(
+            (i for i, row in enumerate(outbounds)
+             if isinstance(row, dict) and str(row.get("tag") or "") == "warp"),
+            -1,
+        )
+        if existing_index >= 0:
+            existing = outbounds[existing_index]
+            if str(existing.get("protocol") or "").lower() == "wireguard":
+                return updated, False
+
+        data = self.warp_data()
+        warp_cfg = None
+        if data:
+            try:
+                warp_cfg = self.warp_config()
+            except XUIError:
+                warp_cfg = None
+        if not data or not warp_cfg:
+            data, warp_cfg = self.warp_register()
+        outbound = self.build_warp_outbound(data, warp_cfg)
+        if existing_index >= 0:
+            outbounds[existing_index] = outbound
+        else:
+            outbounds.append(outbound)
+        return updated, True
+
+    def test_outbound(self, outbound: dict[str, Any], all_outbounds: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        obj = self._unwrap(self._request(
+            "POST",
+            "/panel/api/xray/testOutbound",
+            data={
+                "outbound": json.dumps(outbound, separators=(",", ":")),
+                "allOutbounds": json.dumps(all_outbounds or [], separators=(",", ":")),
+                "mode": "http",
+            },
+        ))
+        return obj if isinstance(obj, dict) else {}
+
     def get_web_cert_files(self) -> dict[str, str]:
         obj = self._unwrap(self._request("GET", "/panel/api/server/getWebCertFiles"))
         if not isinstance(obj, dict):
@@ -404,7 +533,11 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
 
 def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]],
                         gateway_host: str, decrypt_password,
-                        xui_settings: XUISettings | None = None) -> dict[str, Any]:
+                        xui_settings: XUISettings | None = None,
+                        warp_enabled: bool = False,
+                        warp_mode: str = "domains",
+                        warp_domains: list[str] | None = None,
+                        warp_inbound_tags: list[str] | None = None) -> dict[str, Any]:
     if not gateway_host:
         raise XUIError("Gateway host/IP is not configured")
     config = copy.deepcopy(original)
@@ -417,6 +550,24 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
         isinstance(r, dict) and str(r.get("outboundTag", "")).startswith(MANAGED_PREFIX))]
 
     managed_rules: list[dict[str, Any]] = []
+    warp_tags = list(dict.fromkeys(str(x) for x in (warp_inbound_tags or []) if x))
+    if warp_enabled and not warp_tags and xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
+        warp_tags = [CDN_MANAGED_TAG]
+    if warp_enabled and warp_tags:
+        warp_rule: dict[str, Any] = {
+            "type": "field",
+            "inboundTag": warp_tags,
+            "outboundTag": "warp",
+        }
+        if warp_mode != "all":
+            domain_tokens = xray_domain_rules(warp_domains or [])
+            if domain_tokens:
+                warp_rule["domain"] = domain_tokens
+            else:
+                warp_rule = {}
+        if warp_rule:
+            managed_rules.append(warp_rule)
+
     for loc in locations:
         if not loc.get("enabled"):
             continue
@@ -472,9 +623,35 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         raise XUIError("3x-ui URL/API token is not configured")
     client = XUIClient(settings)
     inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
+    original = client.get_xray_config()
+    warp_enabled = get_setting("xui_warp_enabled", "0") == "1"
+    warp_mode = get_setting("xui_warp_mode", "domains") or "domains"
+    try:
+        warp_domains = json.loads(get_setting("xui_warp_domains_json", "[]") or "[]")
+        if not isinstance(warp_domains, list):
+            warp_domains = []
+    except Exception:
+        warp_domains = []
+    try:
+        warp_inbound_tags = json.loads(get_setting("xui_warp_inbound_tags", "[]") or "[]")
+        if not isinstance(warp_inbound_tags, list):
+            warp_inbound_tags = []
+    except Exception:
+        warp_inbound_tags = []
+
+    warp_created = False
+    if warp_enabled:
+        original, warp_created = client.ensure_warp_outbound(original)
+
     updated = build_synced_config(
-        client.get_xray_config(), locations,
-        settings.gateway_host, decrypt_password, settings
+        original, locations,
+        settings.gateway_host, decrypt_password, settings,
+        warp_enabled=warp_enabled,
+        warp_mode=warp_mode,
+        warp_domains=[str(x) for x in warp_domains],
+        warp_inbound_tags=[str(x) for x in warp_inbound_tags],
     )
     client.update_xray_config(updated)
+    inbound_stats["warp_created"] = 1 if warp_created else 0
+    inbound_stats["warp_enabled"] = 1 if warp_enabled else 0
     return inbound_stats

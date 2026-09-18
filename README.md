@@ -159,6 +159,9 @@ WARP دیگر با `warp-cli` و Local Proxy جداگانه روی Tor Gateway �
 4. می‌توان WARP را برای **همه ترافیک Inboundهای انتخابی** یا فقط **دامنه‌های انتخابی** فعال کرد.
 5. در حالت CDN، `torloc-cdn` به‌صورت پیش‌فرض انتخاب می‌شود.
 6. Inbound CDN از route-only HTTP/TLS sniffing استفاده می‌کند تا اگر Client مقصد را به IP resolve کرده باشد، SNI/Host برای Routing دامنه‌ای قابل استفاده باشد.
+7. اگر 3x-ui برای Inbound مدیریت‌شده Tag خودکار مثل `in-2087-tcp` ساخته باشد، پروژه همان Inbound را از روی Remark اختصاصی شناسایی و همان Tag واقعی را در Routing/WARP استفاده می‌کند.
+8. اگر پورت CDN انتخابی واقعاً توسط Inbound دیگری اشغال باشد، پروژه به‌جای شکست، یک پورت آزاد از پورت‌های HTTPS قابل Proxy کلادفلر انتخاب و ذخیره می‌کند.
+
 
 لیست آماده شامل سایت‌هایی مثل Check-Host، Google، YouTube، ChatGPT/OpenAI، GitHub و Discord است و دامنه سفارشی نیز قابل اضافه‌کردن است. برای مسیر دامنه‌ای، `challenges.cloudflare.com` خودکار کنار لیست WARP قرار می‌گیرد تا صفحه Challenge و سایت انتخاب‌شده تا حد ممکن از یک egress استفاده کنند.
 

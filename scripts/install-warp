@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  echo "Run as root: sudo /opt/tor-location-manager/scripts/install-warp"
+  exit 1
+fi
+
+PORT="${TORPANEL_WARP_PORT:-40000}"
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+  echo "Invalid TORPANEL_WARP_PORT: $PORT"
+  exit 2
+fi
+
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "This helper currently supports Debian/Ubuntu."
+  exit 1
+fi
+
+. /etc/os-release
+case "${ID:-}" in
+  debian|ubuntu) ;;
+  *) echo "Unsupported distribution: ${ID:-unknown}"; exit 1 ;;
+esac
+CODENAME="${VERSION_CODENAME:-}"
+if [[ -z "$CODENAME" ]]; then
+  echo "VERSION_CODENAME is missing from /etc/os-release"
+  exit 1
+fi
+
+echo "[1/5] Preparing Cloudflare package repository..."
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg
+install -d -m 0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg   | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+cat > /etc/apt/sources.list.d/cloudflare-client.list <<EOF
+deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $CODENAME main
+EOF
+
+echo "[2/5] Installing official Cloudflare WARP client..."
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflare-warp
+systemctl enable --now warp-svc.service
+
+echo "[3/5] Registering WARP..."
+if ! warp-cli --accept-tos registration show >/dev/null 2>&1; then
+  warp-cli --accept-tos registration new
+fi
+
+echo "[4/5] Enabling Local Proxy mode on 127.0.0.1:$PORT..."
+warp-cli --accept-tos mode proxy
+warp-cli --accept-tos proxy port "$PORT"
+warp-cli --accept-tos connect
+
+echo "[5/5] Verifying WARP egress..."
+ok=0
+for _ in $(seq 1 20); do
+  if curl -fsS --max-time 8 --socks5-hostname "127.0.0.1:$PORT"       https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null       | grep -Eq '^warp=(on|plus)$'; then
+    ok=1
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$ok" -ne 1 ]]; then
+  echo "WARP was installed, but proxy verification failed."
+  echo "Check: warp-cli status"
+  echo "Check: warp-cli settings"
+  exit 1
+fi
+
+echo "WARP Local Proxy is ready on 127.0.0.1:$PORT"
+echo "Use Tor Location Manager -> اتصال و شبکه -> WARP Assist to choose domains."

@@ -34,7 +34,11 @@
         <div class="form-section">
           <div class="form-section-title"><span class="form-section-number">02</span><div><h3>پورت‌ها و مسیر اختصاصی</h3><p>Inbound سمت 3x-ui و Gateway سمت Tor باید پورت متفاوت داشته باشند.</p></div></div>
           <div class="two">
+            {% if xui_managed_inbound_mode == 'cloudflare' %}
+            <div class="field"><span>Inbound مدیریت‌شده 3x-ui</span><div class="callout success"><strong>Cloudflare CDN مشترک</strong><br><code>{{ xui_cdn_domain or 'دامنه CDN' }}:{{ xui_cdn_port }}</code><br><small>برای این Location یک Client VLESS اختصاصی داخل همان Inbound مشترک ساخته می‌شود؛ پورت جدا لازم نیست.</small></div><input name="xui_inbound_port" type="hidden" value=""></div>
+            {% else %}
             <label class="field"><span>پورت Inbound مدیریت‌شده در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>برای 3x-ui یک Inbound اختصاصی خودکار می‌سازد. PasarGuard از Inboundهای موجود Core استفاده می‌کند.</small></label>
+            {% endif %}
             <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت SS2022 بین پنل و Gateway. دسترسی شبکه به این پورت را محدود نگه دارید.</small></label>
           </div>
           <div class="location-route" style="margin-bottom:0">
@@ -59,7 +63,7 @@
               {% endfor %}
             </div>
             {% else %}
-            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. Inbound اختصاصی Tor همچنان هنگام Sync خودکار ساخته می‌شود.</div>
+            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. {{ 'Client اختصاصی این Location داخل Inbound مشترک Cloudflare هنگام Sync ساخته می‌شود.' if xui_managed_inbound_mode == 'cloudflare' else 'Inbound اختصاصی Tor همچنان هنگام Sync خودکار ساخته می‌شود.' }}</div>
             {% endif %}
           </div>
 
@@ -87,7 +91,7 @@
           <div class="review-list">
             <div class="review-row"><span>نام لوکیشن</span><strong data-review-name>—</strong></div>
             <div class="review-row"><span>کشور خروجی</span><strong data-review-country>—</strong></div>
-            <div class="review-row"><span>پورت Inbound 3x-ui</span><strong data-review-inbound>خودکار</strong></div>
+            <div class="review-row"><span>Inbound مدیریت‌شده 3x-ui</span><strong {% if xui_managed_inbound_mode != 'cloudflare' %}data-review-inbound{% endif %}>{{ ('Cloudflare · ' ~ (xui_cdn_domain or 'CDN') ~ ':' ~ xui_cdn_port) if xui_managed_inbound_mode == 'cloudflare' else 'خودکار' }}</strong></div>
             <div class="review-row"><span>پورت Gateway</span><strong data-review-gateway>—</strong></div>
             <div class="review-row"><span>Routing پنل‌ها</span><strong data-review-extra>بدون Route اضافی</strong></div>
             <div class="review-row"><span>وضعیت</span><strong data-review-state>فعال</strong></div>

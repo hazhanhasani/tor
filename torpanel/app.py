@@ -446,7 +446,7 @@ def make_app() -> Flask:
     def settings_warp_test():
         validate_csrf(request.form.get("_csrf"))
         try:
-            port = int(get_setting("warp_proxy_port", "40000") or 40000)
+            port = int(request.form.get("warp_proxy_port") or get_setting("warp_proxy_port", "40000") or 40000)
             result = test_warp_proxy(port)
             details = []
             if result.get("warp"):

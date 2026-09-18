@@ -149,28 +149,22 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 
 بعد از Save، پروژه Tor instance و Xray Gateway را می‌سازد، config فعلی Xray را از 3x-ui می‌خواند، Outbound اختصاصی `torloc-<slug>` و Rule مبتنی بر `inboundTag` را اضافه می‌کند و آن را از endpoint رسمی `/panel/api/xray/update` اعمال می‌کند.
 
-## WARP Assist برای سایت‌های حساس به IP خروجی Tor
+## WARP داخل خود 3x-ui برای سایت‌های حساس به Tor
 
-بعضی سایت‌ها به‌دلیل Reputation مشترک Exitهای Tor، Challenge یا بررسی امنیتی بیشتری نشان می‌دهند. WARP Assist اجازه می‌دهد فقط دامنه‌هایی که خودتان تعیین می‌کنید از Cloudflare WARP خارج شوند و سایر ترافیک همچنان از Tor Location انتخاب‌شده عبور کند.
+WARP دیگر با `warp-cli` و Local Proxy جداگانه روی Tor Gateway پیاده‌سازی نمی‌شود. Tor Location Manager از API رسمی خود 3x-ui استفاده می‌کند:
 
-نصب رسمی Cloudflare WARP روی همان سرور Gateway:
+1. اگر WARP هنوز Register نشده باشد، از `/panel/api/xray/warp/reg` آن را ثبت می‌کند.
+2. یک Outbound واقعی با `tag=warp` و `protocol=wireguard` داخل Xray Config می‌سازد.
+3. در تنظیمات، Inboundهای تحت کنترل WARP از یک لیست کشویی چندانتخابی انتخاب می‌شوند.
+4. می‌توان WARP را برای **همه ترافیک Inboundهای انتخابی** یا فقط **دامنه‌های انتخابی** فعال کرد.
+5. در حالت CDN، `torloc-cdn` به‌صورت پیش‌فرض انتخاب می‌شود.
+6. Inbound CDN از route-only HTTP/TLS sniffing استفاده می‌کند تا اگر Client مقصد را به IP resolve کرده باشد، SNI/Host برای Routing دامنه‌ای قابل استفاده باشد.
 
-```bash
-sudo /usr/local/sbin/tor-location-manager-install-warp
-```
+لیست آماده شامل سایت‌هایی مثل Check-Host، Google، YouTube، ChatGPT/OpenAI، GitHub و Discord است و دامنه سفارشی نیز قابل اضافه‌کردن است. برای مسیر دامنه‌ای، `challenges.cloudflare.com` خودکار کنار لیست WARP قرار می‌گیرد تا صفحه Challenge و سایت انتخاب‌شده تا حد ممکن از یک egress استفاده کنند.
 
-Installer رسمی بسته `cloudflare-warp` را از repository کلادفلر نصب می‌کند، پروتکل Tunnel را روی **MASQUE** قرار می‌دهد، WARP را در Local Proxy mode روی `127.0.0.1:40000` راه‌اندازی می‌کند و با `cdn-cgi/trace` بررسی می‌کند که `warp=on` یا `warp=plus` باشد. نسخه‌های جدید WARP برای Proxy mode به MASQUE نیاز دارند.
+> CDN ورودی به‌تنهایی Reputation خروجی Tor را تغییر نمی‌دهد. WARP می‌تواند برای دامنه‌های انتخابی خروجی را از Tor به شبکه Cloudflare تغییر دهد، اما موفقیت CAPTCHA تضمینی نیست؛ Cookie، JavaScript، Browser Fingerprint و سیاست خود سایت هم مؤثرند.
 
-سپس در **اتصال و شبکه → WARP Assist** قابلیت را فعال و دامنه‌ها را خط‌به‌خط وارد کنید، مثلاً:
-
-```text
-check-host.net
-example.com
-```
-
-Gateway برای این دامنه‌ها با Sniffing محدود HTTP/TLS یک Rule قبل از Rule عمومی Tor می‌سازد و آن‌ها را به Outbound محلی `warp-assist` می‌فرستد. UDP در مسیر Tor همچنان مسدود باقی می‌ماند و سایر دامنه‌ها به Tor Exit همان Location می‌روند.
-
-> WARP جای CAPTCHA solver نیست و تضمین نمی‌کند هر سیستم ضدربات Challenge را قبول کند؛ فقط IP خروجی دامنه انتخابی را از Tor به شبکه Cloudflare تغییر می‌دهد.
+اسکریپت قدیمی `tor-location-manager-install-warp` فقط برای سازگاری با نصب‌های قبلی باقی مانده و در مسیر جدید لازم نیست.
 
 ## استفاده از SSL خود 3x-ui برای پنل Tor
 

@@ -27,7 +27,7 @@
         </div>
         <div class="two" style="margin-top:13px">
           <label class="field"><span>دامنه Proxied در Cloudflare</span><input name="xui_cdn_domain" value="{{ xui_cdn_domain }}" placeholder="edge.example.com"><small>رکورد A/AAAA/CNAME باید Orange Cloud باشد. اگر خالی باشد، hostname آدرس 3x-ui استفاده می‌شود.</small></label>
-          <label class="field"><span>پورت HTTPS CDN</span><select name="xui_cdn_port">{% for port in [443,2053,2083,2087,2096,8443] %}<option value="{{ port }}" {% if xui_cdn_port|string == port|string %}selected{% endif %}>{{ port }}</option>{% endfor %}</select><small>فقط پورت‌هایی که Cloudflare برای HTTPS Proxy می‌کند.</small></label>
+          <label class="field"><span>پورت HTTPS CDN</span><select name="xui_cdn_port">{% for port in [443,2053,2083,2087,2096,8443] %}<option value="{{ port }}" {% if xui_cdn_port|string == port|string %}selected{% endif %}>{{ port }}</option>{% endfor %}</select><small>فقط پورت‌هایی که Cloudflare برای HTTPS Proxy می‌کند. اگر پورت انتخابی اشغال باشد، Sync ابتدا Inbound مدیریت‌شده قبلی را شناسایی می‌کند و در غیر این صورت یک پورت آزاد سازگار با Cloudflare را خودکار انتخاب و ذخیره می‌کند.</small></label>
         </div>
         <label class="field"><span>WebSocket Path</span><input name="xui_cdn_ws_path" value="{{ xui_cdn_ws_path }}" placeholder="خالی = تولید مسیر تصادفی امن"><small>مثلاً <code>/edge-a8F2...</code>. هنگام اولین ذخیره اگر خالی باشد خودکار ساخته و ثابت نگه داشته می‌شود.</small></label>
         <label class="check check-card"><input type="checkbox" name="xui_cdn_reject_unknown_sni" {% if xui_cdn_reject_unknown_sni %}checked{% endif %}><span><b>ردکردن SNI ناشناس</b><small>Origin فقط TLS با SNI دامنه تنظیم‌شده را قبول می‌کند.</small></span></label>

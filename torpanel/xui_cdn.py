@@ -193,7 +193,13 @@ def build_cdn_inbound_payload(
         },
         "tag": CDN_MANAGED_TAG,
         "sniffing": {
-            "enabled": False,
+            # routeOnly lets Xray use HTTP Host / TLS SNI for routing without
+            # rewriting the destination. This makes selective WARP routing work
+            # even when the client resolved the website to an IP locally.
+            "enabled": True,
+            "destOverride": ["http", "tls"],
+            "metadataOnly": False,
+            "routeOnly": True,
         },
     }
 
@@ -266,6 +272,15 @@ def cdn_inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bo
     if str(current_headers.get("Host") or "") != str(expected_headers["Host"]):
         return False
     if int(current_ws.get("heartbeatPeriod") or 0) != int(expected_ws["heartbeatPeriod"]):
+        return False
+
+    current_sniffing = _obj(current.get("sniffing"))
+    expected_sniffing = expected["sniffing"]
+    if bool(current_sniffing.get("enabled")) != bool(expected_sniffing["enabled"]):
+        return False
+    if list(current_sniffing.get("destOverride") or []) != list(expected_sniffing["destOverride"]):
+        return False
+    if bool(current_sniffing.get("routeOnly")) != bool(expected_sniffing["routeOnly"]):
         return False
 
     current_tls = _obj(current_stream.get("tlsSettings"))

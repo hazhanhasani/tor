@@ -416,6 +416,37 @@ def _container_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Path, Pa
     return pairs
 
 
+def _proc_namespace_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Path, Path, str]]:
+    """Resolve certificate paths through the mount namespace of running x-ui processes.
+
+    This covers Docker/LXC/containerd setups where the x-ui API reports a path
+    such as /root/cert/... that exists only inside the container. The privileged
+    helper can still read it through /proc/<pid>/root without requiring Docker
+    socket access.
+    """
+    pairs: list[tuple[Path, Path, str]] = []
+    proc = Path("/proc")
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return pairs
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text(encoding="utf-8", errors="ignore").strip().lower()
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        if "x-ui" not in comm and "x-ui" not in cmdline:
+            continue
+        root = entry / "root"
+        cert_candidate = root / str(cert_path).lstrip("/")
+        key_candidate = root / str(key_path).lstrip("/")
+        pairs.append((cert_candidate, key_candidate, f"proc:{entry.name}:{comm or 'x-ui'}"))
+    return pairs
+
+
 def _common_tls_pairs(public_host: str) -> list[tuple[Path, Path, str]]:
     host = public_host.strip().lower().rstrip(".")
     return [
@@ -450,6 +481,7 @@ def _resolve_panel_tls_source(
     candidates: list[tuple[Path, Path, str]] = [
         (cert_source, key_source, "x-ui-api"),
         *_container_tls_pairs(cert_source, key_source),
+        *_proc_namespace_tls_pairs(cert_source, key_source),
         *_common_tls_pairs(public_host),
     ]
 
@@ -471,8 +503,8 @@ def _resolve_panel_tls_source(
 
     detail = "; ".join(checked[:6])
     raise RuntimeError(
-        "فایل SSL اعلام‌شده توسط 3x-ui روی Host پیدا نشد. "
-        "اگر 3x-ui داخل Docker/Podman باشد، mount گواهی باید روی Host قابل دسترس باشد. "
+        "فایل SSL اعلام‌شده توسط 3x-ui روی Host یا namespace پردازش x-ui پیدا نشد. "
+        "اگر پنل پشت Cloudflare/Nginx TLS-termination باشد، ممکن است 3x-ui خودش فایل SSL محلی نداشته باشد. "
         f"مسیرهای بررسی‌شده: {detail}"
     )
 

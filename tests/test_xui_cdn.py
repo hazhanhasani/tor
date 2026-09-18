@@ -1,12 +1,16 @@
 import uuid
 
+import pytest
+
 from torpanel.xui import XUISettings, build_synced_config
 from torpanel.xui_cdn import (
     CDN_MANAGED_TAG,
+    CDNProfileError,
     build_cdn_inbound_payload,
     derive_vless_id,
     managed_cdn_client_uri,
     managed_client_email,
+    reconcile_cdn_inbound,
 )
 
 
@@ -120,3 +124,21 @@ def test_generated_cloudflare_client_link_has_tls_ws_sni_host_and_fingerprint():
     assert "host=edge.example.com" in uri
     assert "fp=chrome" in uri
     assert "path=%2Fedge-AbCd1234" in uri
+
+
+def test_reconcile_rejects_port_used_by_another_xui_inbound():
+    class FakeClient:
+        settings = cdn_settings()
+
+        def list_inbounds(self):
+            return [
+                {
+                    "id": 7,
+                    "tag": "manual-ws",
+                    "remark": "Existing WS",
+                    "port": 8443,
+                }
+            ]
+
+    with pytest.raises(CDNProfileError, match="8443"):
+        reconcile_cdn_inbound(FakeClient(), [location()], fake_decrypt)

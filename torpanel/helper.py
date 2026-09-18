@@ -361,6 +361,122 @@ def _update_credentials_url(url: str) -> None:
     atomic_write(PANEL_CREDENTIALS_FILE, "\n".join(output).rstrip() + "\n", 0o600)
 
 
+def _map_container_mount_path(path: Path, mounts: list[dict]) -> Path | None:
+    """Map a path reported inside a container to its host bind/volume source."""
+    raw = str(path)
+    candidates: list[tuple[int, Path]] = []
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        destination = str(mount.get("Destination") or "").rstrip("/")
+        source = str(mount.get("Source") or "").rstrip("/")
+        if not destination or destination == "/" or not source:
+            continue
+        if raw == destination or raw.startswith(destination + "/"):
+            suffix = raw[len(destination):].lstrip("/")
+            host_path = Path(source) / suffix if suffix else Path(source)
+            candidates.append((len(destination), host_path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _container_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Path, Path, str]]:
+    pairs: list[tuple[Path, Path, str]] = []
+    for runtime in ("docker", "podman"):
+        binary = shutil.which(runtime)
+        if not binary:
+            continue
+        ids_result = run(binary, "ps", "-q", check=False)
+        ids = [item for item in ids_result.stdout.split() if item]
+        if not ids:
+            continue
+        inspect = run(binary, "inspect", *ids, check=False)
+        if inspect.returncode != 0:
+            continue
+        try:
+            containers = json.loads(inspect.stdout)
+        except Exception:
+            continue
+        if not isinstance(containers, list):
+            continue
+        for item in containers:
+            if not isinstance(item, dict):
+                continue
+            mounts = item.get("Mounts")
+            if not isinstance(mounts, list):
+                continue
+            mapped_cert = _map_container_mount_path(cert_path, mounts)
+            mapped_key = _map_container_mount_path(key_path, mounts)
+            if mapped_cert is None or mapped_key is None:
+                continue
+            name = str(item.get("Name") or "").lstrip("/") or str(item.get("Id") or "")[:12]
+            pairs.append((mapped_cert, mapped_key, f"{runtime}:{name or 'container'}"))
+    return pairs
+
+
+def _common_tls_pairs(public_host: str) -> list[tuple[Path, Path, str]]:
+    host = public_host.strip().lower().rstrip(".")
+    return [
+        (
+            Path("/root/cert") / host / "fullchain.pem",
+            Path("/root/cert") / host / "privkey.pem",
+            "3x-ui-acme",
+        ),
+        (
+            Path("/root/.acme.sh") / f"{host}_ecc" / "fullchain.cer",
+            Path("/root/.acme.sh") / f"{host}_ecc" / f"{host}.key",
+            "acme.sh-ecc",
+        ),
+        (
+            Path("/root/.acme.sh") / host / "fullchain.cer",
+            Path("/root/.acme.sh") / host / f"{host}.key",
+            "acme.sh",
+        ),
+        (
+            Path("/etc/letsencrypt/live") / host / "fullchain.pem",
+            Path("/etc/letsencrypt/live") / host / "privkey.pem",
+            "letsencrypt",
+        ),
+    ]
+
+
+def _resolve_panel_tls_source(
+    cert_setting: str, key_setting: str, public_host: str
+) -> tuple[Path, Path, str]:
+    cert_source = Path(cert_setting)
+    key_source = Path(key_setting)
+    candidates: list[tuple[Path, Path, str]] = [
+        (cert_source, key_source, "x-ui-api"),
+        *_container_tls_pairs(cert_source, key_source),
+        *_common_tls_pairs(public_host),
+    ]
+
+    seen: set[tuple[str, str]] = set()
+    checked: list[str] = []
+    for cert_candidate, key_candidate, source in candidates:
+        pair_key = (str(cert_candidate), str(key_candidate))
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+        checked.append(f"{source}:{cert_candidate}")
+        try:
+            cert_path = cert_candidate.resolve(strict=True)
+            key_path = key_candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if cert_path.is_file() and key_path.is_file():
+            return cert_path, key_path, source
+
+    detail = "; ".join(checked[:6])
+    raise RuntimeError(
+        "فایل SSL اعلام‌شده توسط 3x-ui روی Host پیدا نشد. "
+        "اگر 3x-ui داخل Docker/Podman باشد، mount گواهی باید روی Host قابل دسترس باشد. "
+        f"مسیرهای بررسی‌شده: {detail}"
+    )
+
+
 def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     if os.geteuid() != 0:
         raise SystemExit("helper must run as root")
@@ -394,18 +510,9 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     key_setting = (get_setting("panel_tls_source_key", "") or "").strip()
     if not cert_setting or not key_setting:
         raise RuntimeError("x-ui certificate source paths are not configured.")
-    source_cert = Path(cert_setting)
-    source_key = Path(key_setting)
-    try:
-        cert_path = source_cert.resolve(strict=True)
-        key_path = source_key.resolve(strict=True)
-    except OSError as exc:
-        raise RuntimeError(
-            "x-ui certificate files are not available on this server. "
-            "SSL reuse requires Tor Location Manager and x-ui to be on the same host."
-        ) from exc
-    if not cert_path.is_file() or not key_path.is_file():
-        raise RuntimeError("x-ui certificate source is not a regular file.")
+    cert_path, key_path, tls_source = _resolve_panel_tls_source(
+        cert_setting, key_setting, public_host
+    )
 
     cert_bytes = cert_path.read_bytes()
     key_bytes = key_path.read_bytes()
@@ -436,7 +543,12 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     changed = cert_changed or key_changed or env_changed
     if restart and changed:
         _schedule_panel_restart()
-    return {"enabled": True, "changed": changed, "url": public_url}
+    return {
+        "enabled": True,
+        "changed": changed,
+        "url": public_url,
+        "source": tls_source,
+    }
 
 
 def apply() -> None:
@@ -515,9 +627,14 @@ def main() -> None:
         return
     if len(sys.argv) >= 2 and sys.argv[1] == "panel-tls-sync":
         restart = "--restart" in sys.argv[2:]
-        result = sync_panel_tls(restart=restart)
+        try:
+            result = sync_panel_tls(restart=restart)
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            raise SystemExit(1)
         if result.get("url"):
-            print(f"Panel HTTPS: {result['url']}")
+            source = result.get("source") or "x-ui"
+            print(f"Panel HTTPS: {result['url']} (certificate source: {source})")
         else:
             print("Panel HTTPS disabled; HTTP fallback restored.")
         return
@@ -526,7 +643,11 @@ def main() -> None:
             raise SystemExit("helper must run as root")
         init_db()
         set_setting("panel_tls_enabled", "0")
-        result = sync_panel_tls(restart=True)
+        try:
+            sync_panel_tls(restart=True)
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            raise SystemExit(1)
         print("Panel HTTPS disabled. HTTP fallback will be restored on port 8787.")
         return
     raise SystemExit(

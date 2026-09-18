@@ -3,7 +3,7 @@ import pytest
 import torpanel.panel_tls as panel_tls
 from pathlib import Path
 
-from torpanel.helper import _hostname_matches, _map_container_mount_path
+from torpanel.helper import _hostname_matches, _is_tls_namespace_process, _map_container_mount_path
 
 
 def test_xui_public_host_requires_https_domain():
@@ -76,3 +76,11 @@ def test_container_mount_prefers_most_specific_destination():
         Path("/root/cert/example.com/privkey.pem"), mounts
     )
     assert mapped == Path("/srv/certs/example.com/privkey.pem")
+
+
+def test_tls_namespace_process_includes_xray_and_reverse_proxies():
+    assert _is_tls_namespace_process("x-ui", "/usr/local/x-ui/x-ui")
+    assert _is_tls_namespace_process("xray", "/usr/local/x-ui/bin/xray -config config.json")
+    assert _is_tls_namespace_process("nginx", "nginx: worker process")
+    assert _is_tls_namespace_process("caddy", "/usr/bin/caddy run")
+    assert not _is_tls_namespace_process("sshd", "sshd: root@pts/0")

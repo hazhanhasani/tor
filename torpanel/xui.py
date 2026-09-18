@@ -537,7 +537,8 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
                         warp_enabled: bool = False,
                         warp_mode: str = "domains",
                         warp_domains: list[str] | None = None,
-                        warp_inbound_tags: list[str] | None = None) -> dict[str, Any]:
+                        warp_inbound_tags: list[str] | None = None,
+                        managed_cdn_tag: str = CDN_MANAGED_TAG) -> dict[str, Any]:
     if not gateway_host:
         raise XUIError("Gateway host/IP is not configured")
     config = copy.deepcopy(original)
@@ -557,7 +558,7 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     managed_rules: list[dict[str, Any]] = []
     warp_tags = list(dict.fromkeys(str(x) for x in (warp_inbound_tags or []) if x))
     if warp_enabled and not warp_tags and xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
-        warp_tags = [CDN_MANAGED_TAG]
+        warp_tags = [managed_cdn_tag]
     if warp_enabled and warp_tags:
         warp_rule: dict[str, Any] = {
             "type": "field",
@@ -592,7 +593,7 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
         if xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
             managed_rules.append({
                 "type": "field",
-                "inboundTag": [CDN_MANAGED_TAG],
+                "inboundTag": [managed_cdn_tag],
                 "user": [managed_client_email(loc)],
                 "outboundTag": tag,
             })
@@ -623,12 +624,19 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     return config
 
 
-def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
+def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
     settings = current_settings()
     if not settings.base_url.strip("/") or not settings.api_token:
         raise XUIError("3x-ui URL/API token is not configured")
     client = XUIClient(settings)
+    previous_cdn_tag = get_setting("xui_cdn_runtime_tag", "") or ""
     inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
+    managed_cdn_tag = str(inbound_stats.get("cdn_inbound_tag") or CDN_MANAGED_TAG)
+    if settings.managed_inbound_mode == "cloudflare":
+        set_setting("xui_cdn_runtime_tag", managed_cdn_tag)
+        cdn_port = int(inbound_stats.get("cdn_port") or settings.cdn_port)
+        settings.cdn_port = cdn_port
+        set_setting("xui_cdn_port", str(cdn_port))
     original = client.get_xray_config()
     warp_enabled = get_setting("xui_warp_enabled", "0") == "1"
     warp_mode = get_setting("xui_warp_mode", "domains") or "domains"
@@ -645,6 +653,25 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
     except Exception:
         warp_inbound_tags = []
 
+    if settings.managed_inbound_mode == "cloudflare":
+        replaceable = {CDN_MANAGED_TAG}
+        if previous_cdn_tag:
+            replaceable.add(previous_cdn_tag)
+        normalized_tags: list[str] = []
+        for tag in warp_inbound_tags:
+            value = str(tag or "")
+            if value in replaceable:
+                value = managed_cdn_tag
+            if value and value not in normalized_tags:
+                normalized_tags.append(value)
+        if warp_enabled and not normalized_tags:
+            normalized_tags = [managed_cdn_tag]
+        warp_inbound_tags = normalized_tags
+        set_setting(
+            "xui_warp_inbound_tags",
+            json.dumps(warp_inbound_tags, ensure_ascii=False),
+        )
+
     warp_created = False
     if warp_enabled:
         original, warp_created = client.ensure_warp_outbound(original)
@@ -656,6 +683,7 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         warp_mode=warp_mode,
         warp_domains=[str(x) for x in warp_domains],
         warp_inbound_tags=[str(x) for x in warp_inbound_tags],
+        managed_cdn_tag=managed_cdn_tag,
     )
     client.update_xray_config(updated)
     inbound_stats["warp_created"] = 1 if warp_created else 0

@@ -77,18 +77,34 @@ def test_shared_cdn_inbound_uses_panel_certificate_and_one_client_per_location()
     assert payload["port"] == 8443
     assert len(payload["settings"]["clients"]) == 2
     assert payload["settings"]["decryption"] == "none"
+    assert payload["settings"]["encryption"] == "none"
     assert all(client["tgId"] == 0 for client in payload["settings"]["clients"])
     assert all(isinstance(client["tgId"], int) for client in payload["settings"]["clients"])
+    assert all(uuid.UUID(client["subId"]).version == 4 for client in payload["settings"]["clients"])
     assert payload["streamSettings"]["network"] == "ws"
     assert payload["streamSettings"]["security"] == "tls"
-    assert payload["streamSettings"]["wsSettings"]["path"] == "/edge-AbCd1234"
+    ws = payload["streamSettings"]["wsSettings"]
+    assert ws["path"] == "/edge-AbCd1234"
+    assert ws["host"] == "edge.example.com"
+    assert ws["headers"]["Host"] == "edge.example.com"
+    assert ws["heartbeatPeriod"] == 30
     tls = payload["streamSettings"]["tlsSettings"]
     assert tls["serverName"] == "edge.example.com"
     assert tls["rejectUnknownSni"] is True
     assert tls["minVersion"] == "1.2"
     assert tls["maxVersion"] == "1.3"
-    assert tls["certificates"][0]["certificateFile"] == "/root/cert/example.com/fullchain.pem"
-    assert tls["certificates"][0]["keyFile"] == "/root/cert/example.com/privkey.pem"
+    assert tls["cipherSuites"] == ""
+    assert tls["disableSystemRoot"] is False
+    assert tls["enableSessionResumption"] is False
+    assert tls["alpn"] == ["h3", "h2", "http/1.1"]
+    assert tls["settings"]["fingerprint"] == "randomized"
+    cert = tls["certificates"][0]
+    assert cert["certificateFile"] == "/root/cert/example.com/fullchain.pem"
+    assert cert["keyFile"] == "/root/cert/example.com/privkey.pem"
+    assert cert["useFile"] is True
+    assert cert["usage"] == "encipherment"
+    assert cert["ocspStapling"] == 0
+    assert cert["buildChain"] is False
 
 
 def test_cdn_routes_shared_inbound_by_client_email_to_each_tor_exit():
@@ -123,6 +139,7 @@ def test_generated_cloudflare_client_link_has_tls_ws_sni_host_and_fingerprint():
     assert "sni=edge.example.com" in uri
     assert "host=edge.example.com" in uri
     assert "fp=chrome" in uri
+    assert "alpn=h3%2Ch2%2Chttp%2F1.1" in uri
     assert "path=%2Fedge-AbCd1234" in uri
 
 

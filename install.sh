@@ -180,6 +180,7 @@ if [[ $VENV_READY -eq 0 ]]; then
 fi
 
 install -m 0755 "$APP_DIR/scripts/tor-location-manager-update" /usr/local/sbin/tor-location-manager-update
+install -m 0755 "$APP_DIR/scripts/install-warp" /usr/local/sbin/tor-location-manager-install-warp
 install -m 0644 "$APP_DIR/systemd/tor-location@.service" /etc/systemd/system/tor-location@.service
 install -m 0644 "$APP_DIR/systemd/tor-location-gateway.service" /etc/systemd/system/tor-location-gateway.service
 install -m 0644 "$APP_DIR/systemd/tor-location-panel.service" /etc/systemd/system/tor-location-panel.service

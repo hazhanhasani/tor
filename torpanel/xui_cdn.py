@@ -92,7 +92,7 @@ def _client(location: dict[str, Any], decrypt_password) -> dict[str, Any]:
         "totalGB": 0,
         "expiryTime": 0,
         "enable": True,
-        "tgId": "",
+        "tgId": 0,
         "subId": "",
         "reset": 0,
         "comment": f"Tor {str(location.get('country_code') or '').upper()} · {location.get('name') or location.get('slug')}",
@@ -180,14 +180,23 @@ def _obj(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _client_projection(row: Any) -> tuple[str, str, bool, str]:
+def _client_projection(row: Any) -> tuple[str, str, bool, str, int]:
     if not isinstance(row, dict):
-        return ("", "", False, "")
+        return ("", "", False, "", 0)
+    raw_tg_id = row.get("tgId", 0)
+    # 3x-ui's Go model requires tgId to be JSON integer (int64), never an
+    # empty string. Treat legacy empty-string data as a mismatch so the next
+    # reconciliation rewrites the managed inbound with the typed value 0.
+    try:
+        tg_id = int(raw_tg_id or 0)
+    except (TypeError, ValueError):
+        tg_id = -1
     return (
         str(row.get("email") or ""),
         str(row.get("id") or ""),
         bool(row.get("enable", True)),
         str(row.get("flow") or ""),
+        tg_id,
     )
 
 

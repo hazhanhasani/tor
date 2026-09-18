@@ -1,5 +1,6 @@
 import pytest
 
+import torpanel.helper as helper_module
 import torpanel.panel_tls as panel_tls
 from pathlib import Path
 
@@ -84,3 +85,25 @@ def test_tls_namespace_process_includes_xray_and_reverse_proxies():
     assert _is_tls_namespace_process("nginx", "nginx: worker process")
     assert _is_tls_namespace_process("caddy", "/usr/bin/caddy run")
     assert not _is_tls_namespace_process("sshd", "sshd: root@pts/0")
+
+
+def test_cloudflare_fallback_certificate_is_generated_and_reused(monkeypatch, tmp_path):
+    cert = tmp_path / "fallback.crt"
+    key = tmp_path / "fallback.key"
+    monkeypatch.setattr(helper_module, "PANEL_TLS_DIR", tmp_path)
+    monkeypatch.setattr(helper_module, "PANEL_TLS_FALLBACK_CERT", cert)
+    monkeypatch.setattr(helper_module, "PANEL_TLS_FALLBACK_KEY", key)
+
+    cert_path, key_path, source = helper_module._ensure_cloudflare_fallback_cert(
+        "panel.example.com"
+    )
+    assert source == "cloudflare-full-selfsigned"
+    assert cert_path == cert
+    assert key_path == key
+    helper_module._validate_tls_pair(
+        cert.read_bytes(), key.read_bytes(), "panel.example.com"
+    )
+
+    first_cert = cert.read_bytes()
+    helper_module._ensure_cloudflare_fallback_cert("panel.example.com")
+    assert cert.read_bytes() == first_cert

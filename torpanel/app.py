@@ -365,6 +365,9 @@ def make_app() -> Flask:
             panel_tls_public_url=panel_public_url(),
             panel_https_ports=PANEL_HTTPS_PORTS,
             panel_tls_cloudflare_fallback=get_setting("panel_tls_cloudflare_fallback", "1") == "1",
+            panel_tls_cloudflare_origin_ca=get_setting("panel_tls_cloudflare_origin_ca", "0") == "1",
+            panel_tls_cloudflare_origin_expires=get_setting("panel_tls_cloudflare_origin_expires", ""),
+            panel_tls_cloudflare_origin_id=get_setting("panel_tls_cloudflare_origin_id", ""),
             panel_tls_last_source=get_setting("panel_tls_last_source", ""),
             panel_tls_last_error=get_setting("panel_tls_last_error", ""),
             warp_assist_enabled=get_setting("warp_assist_enabled", "0") == "1",
@@ -384,6 +387,8 @@ def make_app() -> Flask:
             "panel_tls_source_cert",
             "panel_tls_source_key",
             "panel_tls_cloudflare_fallback",
+            "panel_tls_cloudflare_origin_ca",
+            "panel_tls_cloudflare_api_token",
         )
         previous = {key: get_setting(key, "") for key in keys}
         try:
@@ -432,15 +437,29 @@ def make_app() -> Flask:
             set_setting("panel_tls_port", str(port))
             set_setting("panel_tls_source_cert", certs["webCertFile"])
             set_setting("panel_tls_source_key", certs["webKeyFile"])
+            origin_ca_requested = request.form.get("panel_tls_cloudflare_origin_ca") == "on"
+            origin_ca_token = request.form.get("panel_tls_cloudflare_api_token", "").strip()
             set_setting(
                 "panel_tls_cloudflare_fallback",
                 "1" if fallback_requested else "0",
             )
+            set_setting(
+                "panel_tls_cloudflare_origin_ca",
+                "1" if origin_ca_requested else "0",
+            )
+            if origin_ca_token:
+                set_setting("panel_tls_cloudflare_api_token", encrypt_secret(origin_ca_token))
             output = apply_panel_tls()
             suffix = "" if port == 443 else f":{port}"
             url = f"https://{host}{suffix}"
             fallback_used = "cloudflare-full-selfsigned" in (output or "")
-            if fallback_used:
+            origin_ca_used = "cloudflare-origin-ca" in (output or "")
+            if origin_ca_used:
+                flash(
+                    f"HTTPS پنل روی {url} با Cloudflare Origin CA فعال شد و با Full (strict) سازگار است.",
+                    "success",
+                )
+            elif fallback_used:
                 flash(
                     f"HTTPS پنل روی {url} فعال شد. چون Private Key گواهی 3x-ui روی Host قابل دسترس نبود، "
                     "Origin TLS محلی ساخته شد. برای این دامنه در Cloudflare حالت SSL/TLS را روی Full بگذارید، نه Full (strict).",
@@ -452,7 +471,7 @@ def make_app() -> Flask:
                     "success",
                 )
             if output:
-                flash(output, "success" if not fallback_used else "warning")
+                flash(output, "warning" if fallback_used else "success")
         except Exception as exc:
             for key, value in previous.items():
                 set_setting(key, value)

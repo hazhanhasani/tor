@@ -375,7 +375,21 @@ def make_app() -> Flask:
                 request.form.get("panel_tls_port", str(DEFAULT_PANEL_HTTPS_PORT)),
                 xui_base_url=cfg.base_url,
             )
-            certs = XUIClient(cfg).get_web_cert_files()
+            xui_client = XUIClient(cfg)
+            inbound_conflicts = [
+                row for row in xui_client.list_inbounds()
+                if int(row.get("port") or 0) == int(port)
+            ]
+            if inbound_conflicts:
+                names = ", ".join(
+                    str(row.get("remark") or row.get("tag") or row.get("id") or "Inbound")
+                    for row in inbound_conflicts[:5]
+                )
+                raise PanelTLSError(
+                    f"پورت HTTPS پنل {port} در 3x-ui توسط Inbound دیگری استفاده می‌شود ({names}). "
+                    "یک پورت HTTPS آزاد دیگر انتخاب کنید."
+                )
+            certs = xui_client.get_web_cert_files()
             set_setting("panel_tls_enabled", "1")
             set_setting("panel_tls_public_host", host)
             set_setting("panel_tls_port", str(port))

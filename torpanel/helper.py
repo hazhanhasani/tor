@@ -9,12 +9,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links, set_setting
@@ -25,6 +26,8 @@ NODE_AGENT_CONFIG = Path("/etc/tor-location-node/agent.json")
 PANEL_TLS_DIR = Path("/etc/tor-location-manager/tls")
 PANEL_TLS_CERT = PANEL_TLS_DIR / "panel.crt"
 PANEL_TLS_KEY = PANEL_TLS_DIR / "panel.key"
+PANEL_TLS_FALLBACK_CERT = PANEL_TLS_DIR / "cloudflare-origin-fallback.crt"
+PANEL_TLS_FALLBACK_KEY = PANEL_TLS_DIR / "cloudflare-origin-fallback.key"
 PANEL_CREDENTIALS_FILE = Path("/root/tor-location-manager-credentials.txt")
 
 
@@ -553,6 +556,82 @@ def _resolve_panel_tls_source(
     )
 
 
+def _fallback_cert_is_fresh(public_host: str) -> bool:
+    try:
+        cert_bytes = PANEL_TLS_FALLBACK_CERT.read_bytes()
+        key_bytes = PANEL_TLS_FALLBACK_KEY.read_bytes()
+        _validate_tls_pair(cert_bytes, key_bytes, public_host)
+        cert = x509.load_pem_x509_certificate(cert_bytes)
+        not_after = getattr(cert, "not_valid_after_utc", None)
+        if not_after is None:
+            not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        return not_after - datetime.now(timezone.utc) > timedelta(days=30)
+    except Exception:
+        return False
+
+
+def _ensure_cloudflare_fallback_cert(public_host: str) -> tuple[Path, Path, str]:
+    """Create a local ECDSA origin certificate for Cloudflare Full mode.
+
+    This is only a fallback when the certificate shown to visitors is terminated
+    at Cloudflare and the x-ui private key is therefore not present on this host.
+    Cloudflare Full accepts a self-signed origin certificate; Full (strict) does
+    not. The browser still sees Cloudflare's edge certificate on a proxied DNS
+    record.
+    """
+    PANEL_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(PANEL_TLS_DIR, 0o750)
+    ensure_group(PANEL_TLS_DIR, "torpanel")
+    if not _fallback_cert_is_fresh(public_host):
+        now = datetime.now(timezone.utc)
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, public_host),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Tor Location Manager"),
+        ])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=397))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName(public_host)]),
+                critical=False,
+            )
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        key_bytes = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        cert_bytes = cert.public_bytes(serialization.Encoding.PEM)
+        atomic_write_bytes(PANEL_TLS_FALLBACK_CERT, cert_bytes, 0o644)
+        atomic_write_bytes(PANEL_TLS_FALLBACK_KEY, key_bytes, 0o640)
+        ensure_group(PANEL_TLS_FALLBACK_CERT, "torpanel")
+        ensure_group(PANEL_TLS_FALLBACK_KEY, "torpanel")
+    return PANEL_TLS_FALLBACK_CERT, PANEL_TLS_FALLBACK_KEY, "cloudflare-full-selfsigned"
+
+
+def _read_valid_tls_pair(cert_path: Path, key_path: Path, public_host: str) -> tuple[bytes, bytes]:
+    cert_bytes = cert_path.read_bytes()
+    key_bytes = key_path.read_bytes()
+    if not cert_bytes or len(cert_bytes) > 2 * 1024 * 1024:
+        raise RuntimeError("TLS certificate file size is invalid.")
+    if not key_bytes or len(key_bytes) > 512 * 1024:
+        raise RuntimeError("TLS private-key file size is invalid.")
+    _validate_tls_pair(cert_bytes, key_bytes, public_host)
+    return cert_bytes, key_bytes
+
+
 def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     if os.geteuid() != 0:
         raise SystemExit("helper must run as root")
@@ -584,19 +663,21 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
 
     cert_setting = (get_setting("panel_tls_source_cert", "") or "").strip()
     key_setting = (get_setting("panel_tls_source_key", "") or "").strip()
-    if not cert_setting or not key_setting:
-        raise RuntimeError("x-ui certificate source paths are not configured.")
-    cert_path, key_path, tls_source = _resolve_panel_tls_source(
-        cert_setting, key_setting, public_host
-    )
-
-    cert_bytes = cert_path.read_bytes()
-    key_bytes = key_path.read_bytes()
-    if not cert_bytes or len(cert_bytes) > 2 * 1024 * 1024:
-        raise RuntimeError("x-ui certificate file size is invalid.")
-    if not key_bytes or len(key_bytes) > 512 * 1024:
-        raise RuntimeError("x-ui private-key file size is invalid.")
-    _validate_tls_pair(cert_bytes, key_bytes, public_host)
+    allow_fallback = (get_setting("panel_tls_cloudflare_fallback", "1") or "1") == "1"
+    source_error = ""
+    try:
+        if not cert_setting or not key_setting:
+            raise RuntimeError("x-ui certificate source paths are not configured.")
+        cert_path, key_path, tls_source = _resolve_panel_tls_source(
+            cert_setting, key_setting, public_host
+        )
+        cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
+    except Exception as exc:
+        source_error = str(exc)
+        if not allow_fallback:
+            raise
+        cert_path, key_path, tls_source = _ensure_cloudflare_fallback_cert(public_host)
+        cert_bytes, key_bytes = _read_valid_tls_pair(cert_path, key_path, public_host)
 
     PANEL_TLS_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(PANEL_TLS_DIR, 0o750)
@@ -617,13 +698,23 @@ def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
     public_url = f"https://{public_host}{suffix}"
     _update_credentials_url(public_url)
     changed = cert_changed or key_changed or env_changed
+    set_setting("panel_tls_last_source", tls_source)
+    set_setting("panel_tls_last_error", source_error[:1200])
     if restart and changed:
         _schedule_panel_restart()
+    warning = ""
+    if tls_source == "cloudflare-full-selfsigned":
+        warning = (
+            "گواهی خصوصی x-ui روی این Host قابل خواندن نبود؛ یک Origin TLS محلی ECDSA ساخته شد. "
+            "برای دامنه Proxied کلادفلر، SSL/TLS Encryption Mode را روی Full قرار دهید؛ "
+            "Full (strict) با این گواهی self-signed کار نمی‌کند."
+        )
     return {
         "enabled": True,
         "changed": changed,
         "url": public_url,
         "source": tls_source,
+        "warning": warning,
     }
 
 
@@ -711,6 +802,8 @@ def main() -> None:
         if result.get("url"):
             source = result.get("source") or "x-ui"
             print(f"Panel HTTPS: {result['url']} (certificate source: {source})")
+            if result.get("warning"):
+                print(f"WARNING: {result['warning']}")
         else:
             print("Panel HTTPS disabled; HTTP fallback restored.")
         return

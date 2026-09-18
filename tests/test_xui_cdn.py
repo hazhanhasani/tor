@@ -98,6 +98,11 @@ def test_shared_cdn_inbound_uses_panel_certificate_and_one_client_per_location()
     assert tls["enableSessionResumption"] is False
     assert tls["alpn"] == ["h3", "h2", "http/1.1"]
     assert tls["settings"]["fingerprint"] == "randomized"
+    sniffing = payload["sniffing"]
+    assert sniffing["enabled"] is True
+    assert sniffing["routeOnly"] is True
+    assert sniffing["destOverride"] == ["http", "tls"]
+
     cert = tls["certificates"][0]
     assert cert["certificateFile"] == "/root/cert/example.com/fullchain.pem"
     assert cert["keyFile"] == "/root/cert/example.com/privkey.pem"

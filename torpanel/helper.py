@@ -14,6 +14,7 @@ from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from cryptography.x509.oid import NameOID
 
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links
@@ -315,7 +316,7 @@ def _validate_tls_pair(cert_bytes: bytes, key_bytes: bytes, public_host: str) ->
     if not names:
         names.extend(
             attribute.value
-            for attribute in cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+            for attribute in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
             if attribute.value
         )
     if not any(_hostname_matches(name, public_host) for name in names):

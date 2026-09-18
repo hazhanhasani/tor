@@ -13,6 +13,11 @@ import urllib3
 
 from .db import get_setting, set_location_xui_inbound_port
 from .security import decrypt_secret
+from .xui_cdn import (
+    CDN_MANAGED_TAG,
+    reconcile_cdn_inbound,
+    managed_client_email,
+)
 
 MANAGED_PREFIX = "torloc-"
 MANAGED_INBOUND_PREFIX = "torloc-in-"
@@ -38,6 +43,11 @@ class XUISettings:
     gateway_host: str
     verify_tls: bool
     outbound_test_url: str = "https://www.google.com/generate_204"
+    managed_inbound_mode: str = "legacy"
+    cdn_domain: str = ""
+    cdn_port: int = 8443
+    cdn_ws_path: str = "/edge"
+    cdn_reject_unknown_sni: bool = True
 
 
 def current_settings() -> XUISettings:
@@ -48,6 +58,11 @@ def current_settings() -> XUISettings:
         gateway_host=get_setting("gateway_host"),
         verify_tls=get_setting("xui_verify_tls", "1") == "1",
         outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
+        managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
+        cdn_domain=get_setting("xui_cdn_domain", ""),
+        cdn_port=int(get_setting("xui_cdn_port", "8443") or 8443),
+        cdn_ws_path=get_setting("xui_cdn_ws_path", "/edge") or "/edge",
+        cdn_reject_unknown_sni=get_setting("xui_cdn_reject_unknown_sni", "1") == "1",
     )
 
 
@@ -206,6 +221,19 @@ class XUIClient:
             "outboundTestUrl": self.settings.outbound_test_url,
         })
 
+    def get_web_cert_files(self) -> dict[str, str]:
+        obj = self._unwrap(self._request("GET", "/panel/api/server/getWebCertFiles"))
+        if not isinstance(obj, dict):
+            raise XUIError("مسیر Certificate پنل از 3x-ui قابل خواندن نیست.")
+        cert_file = str(obj.get("webCertFile") or "").strip()
+        key_file = str(obj.get("webKeyFile") or "").strip()
+        if not cert_file or not key_file:
+            raise XUIError(
+                "3x-ui برای پنل Certificate/Key ثبت‌شده ندارد. "
+                "ابتدا SSL پنل را تنظیم کنید تا همان Certificate برای Inbound CDN استفاده شود."
+            )
+        return {"webCertFile": cert_file, "webKeyFile": key_file}
+
     def test_connection(self) -> dict[str, Any]:
         if not self.settings.api_token:
             raise XUIError("API Token خالی است.")
@@ -329,6 +357,9 @@ def _choose_inbound_port(location: dict[str, Any], options: list[dict[str, Any]]
 
 
 def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
+    if client.settings.managed_inbound_mode == "cloudflare":
+        return reconcile_cdn_inbound(client, locations, decrypt_password)
+
     options = client.list_inbounds()
     desired_tags = {managed_inbound_tag(loc) for loc in locations if loc.get("enabled")}
 
@@ -372,7 +403,8 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
 
 
 def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]],
-                        gateway_host: str, decrypt_password) -> dict[str, Any]:
+                        gateway_host: str, decrypt_password,
+                        xui_settings: XUISettings | None = None) -> dict[str, Any]:
     if not gateway_host:
         raise XUIError("Gateway host/IP is not configured")
     config = copy.deepcopy(original)
@@ -399,14 +431,29 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
                 "password": decrypt_password(loc["ss_password"]),
             },
         })
-        route_tags = [managed_inbound_tag(loc), *list(loc.get("inbound_tags") or [])]
-        route_tags = list(dict.fromkeys(str(x) for x in route_tags if x))
-        if route_tags:
+        manual_tags = list(dict.fromkeys(str(x) for x in (loc.get("inbound_tags") or []) if x))
+        if xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
             managed_rules.append({
                 "type": "field",
-                "inboundTag": route_tags,
+                "inboundTag": [CDN_MANAGED_TAG],
+                "user": [managed_client_email(loc)],
                 "outboundTag": tag,
             })
+            if manual_tags:
+                managed_rules.append({
+                    "type": "field",
+                    "inboundTag": manual_tags,
+                    "outboundTag": tag,
+                })
+        else:
+            route_tags = [managed_inbound_tag(loc), *manual_tags]
+            route_tags = list(dict.fromkeys(str(x) for x in route_tags if x))
+            if route_tags:
+                managed_rules.append({
+                    "type": "field",
+                    "inboundTag": route_tags,
+                    "outboundTag": tag,
+                })
 
     api_rules, rest = [], []
     for rule in rules:
@@ -425,7 +472,9 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         raise XUIError("3x-ui URL/API token is not configured")
     client = XUIClient(settings)
     inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
-    updated = build_synced_config(client.get_xray_config(), locations,
-                                  settings.gateway_host, decrypt_password)
+    updated = build_synced_config(
+        client.get_xray_config(), locations,
+        settings.gateway_host, decrypt_password, settings
+    )
     client.update_xray_config(updated)
     return inbound_stats

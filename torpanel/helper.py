@@ -8,13 +8,22 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
+from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links
 from .security import decrypt_secret
 
 NODE_AGENT_CONFIG = Path("/etc/tor-location-node/agent.json")
+PANEL_TLS_DIR = Path("/etc/tor-location-manager/tls")
+PANEL_TLS_CERT = PANEL_TLS_DIR / "panel.crt"
+PANEL_TLS_KEY = PANEL_TLS_DIR / "panel.key"
+PANEL_CREDENTIALS_FILE = Path("/root/tor-location-manager-credentials.txt")
 
 
 def atomic_write(path: Path, content: str, mode: int = 0o640) -> bool:
@@ -27,6 +36,28 @@ def atomic_write(path: Path, content: str, mode: int = 0o640) -> bool:
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+        return True
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+def atomic_write_bytes(path: Path, content: bytes, mode: int = 0o640) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.read_bytes() == content:
+            os.chmod(path, mode)
+            return False
+    except OSError:
+        pass
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -200,6 +231,213 @@ def validation_temp_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}.new{path.suffix}")
 
 
+def _panel_env_update(values: dict[str, str]) -> bool:
+    path = Path(ENV_FILE)
+    rows = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    remaining = dict(values)
+    output: list[str] = []
+    changed = False
+    for raw in rows:
+        if "=" not in raw or raw.lstrip().startswith("#"):
+            output.append(raw)
+            continue
+        key = raw.split("=", 1)[0].strip()
+        if key not in remaining:
+            output.append(raw)
+            continue
+        new_line = f"{key}={remaining.pop(key)}"
+        output.append(new_line)
+        if raw != new_line:
+            changed = True
+    for key, value in remaining.items():
+        output.append(f"{key}={value}")
+        changed = True
+    encoded = "\n".join(output).rstrip() + "\n"
+    try:
+        if path.read_text(encoding="utf-8") == encoded:
+            return False
+    except OSError:
+        pass
+    atomic_write(path, encoded, 0o640)
+    ensure_group(path, "torpanel")
+    return changed
+
+
+def _hostname_matches(pattern: str, host: str) -> bool:
+    pattern = pattern.strip().lower().rstrip(".")
+    host = host.strip().lower().rstrip(".")
+    if not pattern or not host:
+        return False
+    if pattern == host:
+        return True
+    if pattern.startswith("*."):
+        suffix = pattern[2:]
+        host_labels = host.split(".")
+        suffix_labels = suffix.split(".")
+        return len(host_labels) == len(suffix_labels) + 1 and host_labels[1:] == suffix_labels
+    return False
+
+
+def _validate_tls_pair(cert_bytes: bytes, key_bytes: bytes, public_host: str) -> None:
+    try:
+        cert = x509.load_pem_x509_certificate(cert_bytes)
+        key = serialization.load_pem_private_key(key_bytes, password=None)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid x-ui TLS certificate/key: {exc}") from exc
+
+    cert_public = cert.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    key_public = key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if cert_public != key_public:
+        raise RuntimeError("x-ui certificate and private key do not match.")
+
+    now = datetime.now(timezone.utc)
+    not_before = getattr(cert, "not_valid_before_utc", None)
+    not_after = getattr(cert, "not_valid_after_utc", None)
+    if not_before is None:
+        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)
+    if not_after is None:
+        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
+    if now < not_before or now >= not_after:
+        raise RuntimeError("x-ui certificate is not currently valid.")
+
+    names: list[str] = []
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        names.extend(str(value) for value in san.get_values_for_type(x509.DNSName))
+    except x509.ExtensionNotFound:
+        pass
+    if not names:
+        names.extend(
+            attribute.value
+            for attribute in cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+            if attribute.value
+        )
+    if not any(_hostname_matches(name, public_host) for name in names):
+        raise RuntimeError(
+            f"x-ui certificate does not cover panel hostname {public_host}."
+        )
+
+
+def _schedule_panel_restart() -> None:
+    unit = f"tor-location-panel-restart-{int(time.time())}"
+    result = run(
+        "systemd-run",
+        f"--unit={unit}",
+        "--on-active=2s",
+        "--collect",
+        "/bin/systemctl",
+        "restart",
+        "tor-location-panel.service",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout.strip() or "Could not schedule panel restart.")
+
+
+def _update_credentials_url(url: str) -> None:
+    if not PANEL_CREDENTIALS_FILE.exists():
+        return
+    try:
+        rows = PANEL_CREDENTIALS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    output: list[str] = []
+    replaced = False
+    for row in rows:
+        if row.startswith("URL:"):
+            output.append(f"URL: {url}")
+            replaced = True
+        else:
+            output.append(row)
+    if not replaced:
+        output.insert(0, f"URL: {url}")
+    atomic_write(PANEL_CREDENTIALS_FILE, "\n".join(output).rstrip() + "\n", 0o600)
+
+
+def sync_panel_tls(*, restart: bool = False) -> dict[str, str | bool]:
+    if os.geteuid() != 0:
+        raise SystemExit("helper must run as root")
+    init_db()
+    enabled = get_setting("panel_tls_enabled", "0") == "1"
+    if not enabled:
+        fallback_port = get_setting("panel_http_fallback_port", "8787") or "8787"
+        changed = _panel_env_update({
+            "TORPANEL_TLS_ENABLED": "0",
+            "TORPANEL_PORT": fallback_port,
+            "TORPANEL_PUBLIC_HOST": "",
+            "TORPANEL_TLS_CERTFILE": str(PANEL_TLS_CERT),
+            "TORPANEL_TLS_KEYFILE": str(PANEL_TLS_KEY),
+        })
+        _update_credentials_url(f"http://SERVER_IP:{fallback_port}")
+        if restart and changed:
+            _schedule_panel_restart()
+        return {"enabled": False, "changed": changed, "url": ""}
+
+    public_host = (get_setting("panel_tls_public_host", "") or "").strip().lower()
+    try:
+        port = int(get_setting("panel_tls_port", "2096") or 2096)
+    except ValueError as exc:
+        raise RuntimeError("Panel TLS port is invalid.") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("Panel TLS port is outside the valid range.")
+    if not public_host:
+        raise RuntimeError("Panel TLS public hostname is missing.")
+
+    cert_setting = (get_setting("panel_tls_source_cert", "") or "").strip()
+    key_setting = (get_setting("panel_tls_source_key", "") or "").strip()
+    if not cert_setting or not key_setting:
+        raise RuntimeError("x-ui certificate source paths are not configured.")
+    source_cert = Path(cert_setting)
+    source_key = Path(key_setting)
+    try:
+        cert_path = source_cert.resolve(strict=True)
+        key_path = source_key.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(
+            "x-ui certificate files are not available on this server. "
+            "SSL reuse requires Tor Location Manager and x-ui to be on the same host."
+        ) from exc
+    if not cert_path.is_file() or not key_path.is_file():
+        raise RuntimeError("x-ui certificate source is not a regular file.")
+
+    cert_bytes = cert_path.read_bytes()
+    key_bytes = key_path.read_bytes()
+    if not cert_bytes or len(cert_bytes) > 2 * 1024 * 1024:
+        raise RuntimeError("x-ui certificate file size is invalid.")
+    if not key_bytes or len(key_bytes) > 512 * 1024:
+        raise RuntimeError("x-ui private-key file size is invalid.")
+    _validate_tls_pair(cert_bytes, key_bytes, public_host)
+
+    PANEL_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(PANEL_TLS_DIR, 0o750)
+    ensure_group(PANEL_TLS_DIR, "torpanel")
+    cert_changed = atomic_write_bytes(PANEL_TLS_CERT, cert_bytes, 0o644)
+    key_changed = atomic_write_bytes(PANEL_TLS_KEY, key_bytes, 0o640)
+    ensure_group(PANEL_TLS_CERT, "torpanel")
+    ensure_group(PANEL_TLS_KEY, "torpanel")
+
+    env_changed = _panel_env_update({
+        "TORPANEL_TLS_ENABLED": "1",
+        "TORPANEL_PORT": str(port),
+        "TORPANEL_PUBLIC_HOST": public_host,
+        "TORPANEL_TLS_CERTFILE": str(PANEL_TLS_CERT),
+        "TORPANEL_TLS_KEYFILE": str(PANEL_TLS_KEY),
+    })
+    suffix = "" if port == 443 else f":{port}"
+    public_url = f"https://{public_host}{suffix}"
+    _update_credentials_url(public_url)
+    changed = cert_changed or key_changed or env_changed
+    if restart and changed:
+        _schedule_panel_restart()
+    return {"enabled": True, "changed": changed, "url": public_url}
+
+
 def apply() -> None:
     if os.geteuid() != 0:
         raise SystemExit("helper must run as root")
@@ -269,9 +507,22 @@ def apply() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] != "apply":
-        raise SystemExit("usage: python -m torpanel.helper apply")
-    apply()
+    if len(sys.argv) >= 2 and sys.argv[1] == "apply":
+        if len(sys.argv) != 2:
+            raise SystemExit("usage: python -m torpanel.helper apply")
+        apply()
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "panel-tls-sync":
+        restart = "--restart" in sys.argv[2:]
+        result = sync_panel_tls(restart=restart)
+        if result.get("url"):
+            print(f"Panel HTTPS: {result['url']}")
+        else:
+            print("Panel HTTPS disabled; HTTP fallback restored.")
+        return
+    raise SystemExit(
+        "usage: python -m torpanel.helper {apply|panel-tls-sync [--restart]}"
+    )
 
 
 if __name__ == "__main__":

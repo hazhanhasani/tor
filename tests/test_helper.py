@@ -118,5 +118,5 @@ def test_gateway_routes_selected_domains_to_warp_before_tor(monkeypatch):
     rules = cfg["routing"]["rules"]
     assert rules[0]["outboundTag"] == "blocked"
     assert rules[1]["outboundTag"] == "warp-assist"
-    assert rules[1]["domain"] == ["domain:check-host.net", "domain:example.com"]
+    assert rules[1]["domain"] == ["domain:check-host.net", "domain:example.com", "domain:challenges.cloudflare.com"]
     assert rules[2]["outboundTag"] == "tor-de-test"

@@ -78,6 +78,32 @@
 </div>
 
 <section class="panel" style="margin-top:16px">
+  <div class="section-title">
+    <div><h2>HTTPS خود پنل Tor با SSL 3x-ui</h2><p>همان Certificate و Private Key ثبت‌شده در 3x-ui را به‌صورت محلی و امن برای این پنل استفاده می‌کند تا به‌جای IP با دامنه وارد شوید.</p></div>
+    <span class="status {{ 'ok' if panel_tls_enabled else 'warn' }}">{{ 'فعال' if panel_tls_enabled else 'HTTP' }}</span>
+  </div>
+  <form method="post" action="{{ url_for('settings_panel_tls') }}" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label class="check check-card">
+      <input type="checkbox" name="panel_tls_enabled" {% if panel_tls_enabled %}checked{% endif %}>
+      <span><b>استفاده از SSL خود 3x-ui برای Tor Location Manager</b><small>دامنه از URL ذخیره‌شده 3x-ui گرفته می‌شود؛ IP مستقیم بعد از فعال‌سازی برای صفحات مدیریتی پذیرفته نمی‌شود.</small></span>
+    </label>
+    <div class="two">
+      <label class="field"><span>دامنه پنل</span><input value="{{ panel_tls_public_host or 'از URL 3x-ui به‌صورت خودکار' }}" readonly><small>Certificate باید این hostname یا Wildcard متناظر را پوشش دهد.</small></label>
+      <label class="field"><span>پورت HTTPS پنل</span><select name="panel_tls_port">{% for port in panel_https_ports %}<option value="{{ port }}" {% if panel_tls_port|string == port|string %}selected{% endif %}>{{ port }}</option>{% endfor %}</select><small>پورت‌های HTTPS سازگار با Cloudflare. سیستم تداخل با 3x-ui، CDN Inbound، Gateway و Tunnel را بررسی می‌کند.</small></label>
+    </div>
+    {% if panel_tls_public_url %}
+    <div class="callout success"><strong>آدرس HTTPS فعلی:</strong> <code>{{ panel_tls_public_url }}</code></div>
+    {% else %}
+    <div class="callout info"><strong>بعد از فعال‌سازی:</strong> مثلاً اگر 3x-ui روی <code>https://panel.example.com:2053</code> باشد و پورت 2096 را انتخاب کنید، Tor Location Manager با <code>https://panel.example.com:2096</code> باز می‌شود.</div>
+    {% endif %}
+    <div class="callout warning"><strong>شرط مهم:</strong> برای استفاده مستقیم از فایل‌های SSL، 3x-ui و Tor Location Manager باید روی همان سرور باشند. اگر 3x-ui روی سرور دیگری باشد، سیستم فعال‌سازی را متوقف می‌کند و HTTP فعلی را خراب نمی‌کند.</div>
+    <div class="callout"><strong>تمدید خودکار:</strong> مسیر Certificate اصلی 3x-ui ذخیره می‌شود و Timer سیستم هر چند ساعت تغییر Certificate را Sync می‌کند؛ Private Key فقط روی همان سرور کپی می‌شود و در دیتابیس یا UI نمایش داده نمی‌شود.</div>
+    <div class="actions"><button class="button primary" type="submit">{{ icon('shield') }} اعمال HTTPS پنل</button></div>
+  </form>
+</section>
+
+<section class="panel" style="margin-top:16px">
   <div class="section-title"><div><h2>PasarGuard</h2><p>اتصال به Core API برای Routing مستقیم Tor و Hybrid Tunnel روی Inboundهای PasarGuard</p></div><span class="status {{ 'ok' if pasarguard_has_key and pasarguard_base_url and pasarguard_core_id else 'warn' }}">{{ 'پیکربندی شده' if pasarguard_has_key and pasarguard_base_url and pasarguard_core_id else 'ناقص' }}</span></div>
   <form method="post" action="{{ url_for('settings_pasarguard') }}" class="stack">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">

@@ -36,14 +36,61 @@
       </div>
 
       <div class="form-section" style="padding:17px">
-        <div class="form-section-title"><span class="form-section-number">WP</span><div><h3>WARP Assist برای سایت‌های مشکل‌دار</h3><p>فقط دامنه‌هایی که مشخص می‌کنی از Cloudflare WARP خارج می‌شوند؛ بقیه ترافیک همچنان از Tor همان Location عبور می‌کند.</p></div></div>
-        <label class="check check-card"><input type="checkbox" name="warp_assist_enabled" {% if warp_assist_enabled %}checked{% endif %}><span><b>WARP Assist فعال باشد</b><small>برای سایت‌هایی که با IP خروجی Tor چالش امنیتی مکرر می‌دهند. این قابلیت CAPTCHA را حل یا دور نمی‌زند؛ فقط مسیر خروجی دامنه انتخابی را به WARP تغییر می‌دهد.</small></span></label>
+        <div class="form-section-title"><span class="form-section-number">WP</span><div><h3>Cloudflare WARP داخل خود 3x-ui</h3><p>WARP از API رسمی 3x-ui ثبت می‌شود و یک Outbound واقعی <code>warp</code> از نوع WireGuard داخل Xray می‌سازد؛ دیگر Local Proxy جدا روی Tor Gateway لازم نیست.</p></div></div>
+
+        <label class="check check-card"><input type="checkbox" name="xui_warp_enabled" {% if xui_warp_enabled %}checked{% endif %}><span><b>WARP در 3x-ui فعال و مدیریت شود</b><small>هنگام Save اگر WARP هنوز Register نشده باشد، پروژه با API خود 3x-ui آن را Register می‌کند و Outbound <code>warp</code> را به Xray Config اضافه می‌کند.</small></span></label>
+
         <div class="two" style="margin-top:13px">
-          <label class="field"><span>پورت Local WARP Proxy</span><input name="warp_proxy_port" type="number" min="1024" max="65535" value="{{ warp_proxy_port }}"><small>پیش‌فرض Cloudflare Local Proxy معمولاً <code>40000</code> است و فقط روی <code>127.0.0.1</code> استفاده می‌شود.</small></label>
-          <div class="field"><span>نصب WARP روی همین سرور</span><div class="callout"><code>sudo /usr/local/sbin/tor-location-manager-install-warp</code><br><small>بعد از بروزرسانی پروژه، این دستور رسمی Cloudflare WARP را نصب و در Local Proxy mode راه‌اندازی می‌کند.</small></div></div>
+          <label class="field"><span>سیاست WARP</span>
+            <select name="xui_warp_mode">
+              <option value="domains" {% if xui_warp_mode == 'domains' %}selected{% endif %}>فقط دامنه‌های انتخابی</option>
+              <option value="all" {% if xui_warp_mode == 'all' %}selected{% endif %}>تمام ترافیک Inboundهای انتخابی</option>
+            </select>
+            <small>برای حفظ Tor روی بقیه سایت‌ها، حالت دامنه‌های انتخابی پیشنهاد می‌شود.</small>
+          </label>
+
+          <label class="field"><span>Inboundهای تحت کنترل WARP</span>
+            <select name="xui_warp_inbound_tags" multiple size="5">
+              {% for row in xui_warp_available_inbounds %}
+              <option value="{{ row.tag }}" {% if row.tag in xui_warp_inbound_tags %}selected{% endif %}>{{ row.remark or row.tag }} · {{ row.tag }}{% if row.port %} · :{{ row.port }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <small>در حالت CDN معمولاً <code>torloc-cdn</code> را انتخاب کن. اگر هیچ موردی انتخاب نشود و CDN فعال باشد، همین Inbound خودکار انتخاب می‌شود.</small>
+          </label>
         </div>
-        <label class="field"><span>دامنه‌های WARP Assist</span><textarea name="warp_assist_domains" rows="6" class="mono" placeholder="check-host.net&#10;example.com">{{ warp_assist_domains }}</textarea><small>هر دامنه یک خط. تمام زیر‌دامنه‌های همان دامنه نیز Route می‌شوند. URL کامل هم پذیرفته و به hostname تبدیل می‌شود. وقتی WARP Assist فعال باشد، <code>challenges.cloudflare.com</code> نیز خودکار روی همان WARP route قرار می‌گیرد تا خود Challenge از IP دیگری باز نشود.</small></label>
-        <div class="callout warning" style="margin-top:10px"><strong>محدودیت:</strong> WARP تضمین نمی‌کند هر سیستم ضدربات تأیید شود؛ Reputation، Cookie، JavaScript و Fingerprint هم می‌توانند در Challenge مؤثر باشند.</div>
+
+        <div class="two" style="margin-top:13px">
+          <label class="field"><span>لیست آماده سایت‌های تحت WARP</span>
+            <select name="xui_warp_domain_presets" multiple size="7">
+              {% for domain, label in xui_warp_domain_presets %}
+              <option value="{{ domain }}" {% if domain in xui_warp_domains %}selected{% endif %}>{{ label }} — {{ domain }}</option>
+              {% endfor %}
+            </select>
+            <small>چند مورد را هم‌زمان می‌توانی انتخاب کنی.</small>
+          </label>
+
+          <label class="field"><span>دامنه‌های سفارشی</span>
+            <textarea name="xui_warp_custom_domains" rows="7" class="mono" placeholder="example.com&#10;site.ir">{% for domain in xui_warp_domains if domain not in (xui_warp_domain_presets | map(attribute=0) | list) %}{{ domain }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+            <small>هر دامنه یک خط. زیر‌دامنه‌ها هم پوشش داده می‌شوند. <code>challenges.cloudflare.com</code> به‌صورت خودکار کنار دامنه‌های انتخابی از همان WARP Exit عبور می‌کند.</small>
+          </label>
+        </div>
+
+        <div class="callout {{ 'success' if xui_warp_status.outbound and xui_warp_status.registered else 'warning' }}" style="margin-top:10px">
+          <strong>وضعیت 3x-ui WARP:</strong>
+          {% if xui_warp_status.outbound and xui_warp_status.registered %}
+            Registered و Outbound <code>warp</code> فعال است.
+          {% elif xui_warp_status.outbound %}
+            Outbound <code>warp</code> موجود است؛ وضعیت Registration کامل تأیید نشد.
+          {% elif xui_warp_status.registered %}
+            WARP Register شده ولی Outbound <code>warp</code> هنوز داخل Xray Config نیست؛ Save تنظیمات آن را می‌سازد.
+          {% else %}
+            هنوز WARP در 3x-ui آماده نیست؛ Save تنظیمات آن را Register می‌کند.
+          {% endif %}
+          {% if xui_warp_status.error %}<br><small>{{ xui_warp_status.error }}</small>{% endif %}
+        </div>
+
+        <div class="callout info" style="margin-top:10px"><strong>برای CAPTCHAهای Cloudflare:</strong> CDN فقط مسیر ورودی را Cloudflare می‌کند؛ Reputation خروجی کاربر را تغییر نمی‌دهد. WARP اینجا برای سایت‌های انتخابی خروجی را از Tor به Cloudflare WARP می‌برد و Challenge هم روی همان خروجی نگه داشته می‌شود.</div>
+        <div class="callout warning" style="margin-top:10px"><strong>محدودیت:</strong> WARP تضمین نمی‌کند هر CAPTCHA تأیید شود؛ Cookie، JavaScript، Fingerprint و سیاست خود سایت نیز مؤثرند.</div>
       </div>
 
       <div class="form-section" style="padding:17px">
@@ -74,7 +121,7 @@
         <div class="info-row"><span class="mini-icon">{{ icon('server') }}</span><div><strong>Gateway</strong><small>{{ gateway_host or 'آدرس Gateway مشخص نشده' }}</small></div></div>
         <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>Tor Transport</strong><small>{{ 'obfs4 Bridge · ' ~ bridge_count ~ ' bridge' if tor_transport_mode == 'obfs4' else 'Direct' }}</small></div></div>
         <div class="info-row"><span class="mini-icon">{{ icon('shield') }}</span><div><strong>TLS Validation</strong><small>{{ 'فعال' if xui_verify_tls else 'غیرفعال' }}</small></div></div>
-        <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>WARP Assist</strong><small>{{ 'فعال · ' ~ (warp_assist_domains.splitlines()|length) ~ ' دامنه' if warp_assist_enabled else 'غیرفعال' }}</small></div></div>
+        <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>3x-ui WARP</strong><small>{% if xui_warp_enabled %}{{ 'آماده' if xui_warp_status.outbound and xui_warp_status.registered else 'فعال‌سازی در Sync' }} · {{ xui_warp_mode }}{% else %}غیرفعال{% endif %}</small></div></div>
       </div>
     </section>
 

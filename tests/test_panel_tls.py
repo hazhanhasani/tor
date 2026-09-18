@@ -1,7 +1,9 @@
 import pytest
 
 import torpanel.panel_tls as panel_tls
-from torpanel.helper import _hostname_matches
+from pathlib import Path
+
+from torpanel.helper import _hostname_matches, _map_container_mount_path
 
 
 def test_xui_public_host_requires_https_domain():
@@ -52,3 +54,25 @@ def test_certificate_hostname_matching_supports_single_label_wildcard():
     assert _hostname_matches("*.example.com", "panel.example.com")
     assert not _hostname_matches("*.example.com", "a.b.example.com")
     assert not _hostname_matches("panel.example.com", "other.example.com")
+
+
+def test_container_mount_maps_xui_cert_path_to_host_volume():
+    mounts = [
+        {"Destination": "/etc/x-ui", "Source": "/srv/3x-ui/db"},
+        {"Destination": "/root/cert", "Source": "/srv/3x-ui/cert"},
+    ]
+    mapped = _map_container_mount_path(
+        Path("/root/cert/example.com/fullchain.pem"), mounts
+    )
+    assert mapped == Path("/srv/3x-ui/cert/example.com/fullchain.pem")
+
+
+def test_container_mount_prefers_most_specific_destination():
+    mounts = [
+        {"Destination": "/root", "Source": "/srv/root"},
+        {"Destination": "/root/cert", "Source": "/srv/certs"},
+    ]
+    mapped = _map_container_mount_path(
+        Path("/root/cert/example.com/privkey.pem"), mounts
+    )
+    assert mapped == Path("/srv/certs/example.com/privkey.pem")

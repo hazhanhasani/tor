@@ -1,0 +1,22 @@
+[Unit]
+Description=Tor Location Manager HTTP to HTTPS Redirect
+After=network-online.target tor-location-panel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=torpanel
+Group=torpanel
+WorkingDirectory=/opt/tor-location-manager
+Environment=TORPANEL_ENV_FILE=/etc/tor-location-manager/panel.env
+EnvironmentFile=/etc/tor-location-manager/panel.env
+ExecStart=/opt/tor-location-manager/venv/bin/python -m torpanel.panel_redirect
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tor-location-manager /etc/tor-location-manager
+
+[Install]
+WantedBy=multi-user.target

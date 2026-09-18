@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync x-ui TLS certificate into Tor Location Manager panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tor-location-manager/venv/bin/python -m torpanel.helper panel-tls-sync --restart

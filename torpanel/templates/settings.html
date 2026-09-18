@@ -36,6 +36,17 @@
       </div>
 
       <div class="form-section" style="padding:17px">
+        <div class="form-section-title"><span class="form-section-number">WP</span><div><h3>WARP Assist برای سایت‌های مشکل‌دار</h3><p>فقط دامنه‌هایی که مشخص می‌کنی از Cloudflare WARP خارج می‌شوند؛ بقیه ترافیک همچنان از Tor همان Location عبور می‌کند.</p></div></div>
+        <label class="check check-card"><input type="checkbox" name="warp_assist_enabled" {% if warp_assist_enabled %}checked{% endif %}><span><b>WARP Assist فعال باشد</b><small>برای سایت‌هایی که با IP خروجی Tor چالش امنیتی مکرر می‌دهند. این قابلیت CAPTCHA را حل یا دور نمی‌زند؛ فقط مسیر خروجی دامنه انتخابی را به WARP تغییر می‌دهد.</small></span></label>
+        <div class="two" style="margin-top:13px">
+          <label class="field"><span>پورت Local WARP Proxy</span><input name="warp_proxy_port" type="number" min="1024" max="65535" value="{{ warp_proxy_port }}"><small>پیش‌فرض Cloudflare Local Proxy معمولاً <code>40000</code> است و فقط روی <code>127.0.0.1</code> استفاده می‌شود.</small></label>
+          <div class="field"><span>نصب WARP روی همین سرور</span><div class="callout"><code>sudo /opt/tor-location-manager/scripts/install-warp</code><br><small>بعد از بروزرسانی پروژه، این دستور رسمی Cloudflare WARP را نصب و در Local Proxy mode راه‌اندازی می‌کند.</small></div></div>
+        </div>
+        <label class="field"><span>دامنه‌های WARP Assist</span><textarea name="warp_assist_domains" rows="6" class="mono" placeholder="check-host.net&#10;example.com">{{ warp_assist_domains }}</textarea><small>هر دامنه یک خط. تمام زیر‌دامنه‌های همان دامنه نیز Route می‌شوند. URL کامل هم پذیرفته و به hostname تبدیل می‌شود.</small></label>
+        <div class="callout warning" style="margin-top:10px"><strong>محدودیت:</strong> WARP تضمین نمی‌کند هر سیستم ضدربات تأیید شود؛ Reputation، Cookie، JavaScript و Fingerprint هم می‌توانند در Challenge مؤثر باشند.</div>
+      </div>
+
+      <div class="form-section" style="padding:17px">
         <div class="form-section-title"><span class="form-section-number">IR</span><div><h3>سازگاری Tor با سرور ایران / شبکه محدود</h3><p>Direct برای حالت عادی و obfs4 برای شبکه‌ای که bootstrap مستقیم Tor مسدود است.</p></div></div>
         <div class="segmented">
           <div class="segment-option"><input id="transportDirect" type="radio" name="tor_transport_mode" value="direct" {% if tor_transport_mode == 'direct' %}checked{% endif %}><label for="transportDirect">Direct<small>اتصال مستقیم و کم‌هزینه‌تر به شبکه Tor</small></label></div>
@@ -50,6 +61,7 @@
       <div class="actions">
         <button class="button primary" type="submit">{{ icon('check') }} ذخیره 3x-ui و Tor</button>
         <button class="button" type="submit" formaction="{{ url_for('settings_test') }}">{{ icon('pulse') }} تست 3x-ui</button>
+        <button class="button" type="submit" formaction="{{ url_for('settings_warp_test') }}">{{ icon('wifi') }} تست WARP</button>
       </div>
     </form>
   </section>
@@ -62,6 +74,7 @@
         <div class="info-row"><span class="mini-icon">{{ icon('server') }}</span><div><strong>Gateway</strong><small>{{ gateway_host or 'آدرس Gateway مشخص نشده' }}</small></div></div>
         <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>Tor Transport</strong><small>{{ 'obfs4 Bridge · ' ~ bridge_count ~ ' bridge' if tor_transport_mode == 'obfs4' else 'Direct' }}</small></div></div>
         <div class="info-row"><span class="mini-icon">{{ icon('shield') }}</span><div><strong>TLS Validation</strong><small>{{ 'فعال' if xui_verify_tls else 'غیرفعال' }}</small></div></div>
+        <div class="info-row"><span class="mini-icon">{{ icon('wifi') }}</span><div><strong>WARP Assist</strong><small>{{ 'فعال · ' ~ (warp_assist_domains.splitlines()|length) ~ ' دامنه' if warp_assist_enabled else 'غیرفعال' }}</small></div></div>
       </div>
     </section>
 

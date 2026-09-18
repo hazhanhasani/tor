@@ -41,6 +41,13 @@ from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings as xui_current_settings, normalize_api_token
+from .xui_cdn import (
+    CDNProfileError,
+    managed_cdn_client_uri,
+    normalize_cdn_domain,
+    normalize_cdn_port,
+    normalize_ws_path,
+)
 
 
 def _format_conflicts(conflicts: dict[str, list[str]]) -> str:
@@ -160,8 +167,23 @@ def make_app() -> Flask:
         for loc in locations:
             loc["active"] = service_active(loc["slug"])
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
+        xui_cfg = xui_current_settings()
+        if xui_cfg.managed_inbound_mode == "cloudflare":
+            for loc in locations:
+                try:
+                    loc["cdn_client_uri"] = managed_cdn_client_uri(loc, xui_cfg, decrypt_secret)
+                except Exception:
+                    loc["cdn_client_uri"] = ""
         countries = sorted({str(loc["country_code"]).upper() for loc in locations})
-        return render_template("index.html", locations=locations, configured=configured, countries=countries)
+        return render_template(
+            "index.html",
+            locations=locations,
+            configured=configured,
+            countries=countries,
+            xui_managed_inbound_mode=xui_cfg.managed_inbound_mode,
+            xui_cdn_domain=xui_cfg.cdn_domain,
+            xui_cdn_port=xui_cfg.cdn_port,
+        )
 
     @app.route("/settings", methods=["GET", "POST"])
     @login_required
@@ -173,11 +195,44 @@ def make_app() -> Flask:
             gateway_host = request.form.get("gateway_host", "").strip()
             verify_tls = "1" if request.form.get("xui_verify_tls") == "on" else "0"
             test_url = request.form.get("xui_outbound_test_url", "https://www.google.com/generate_204").strip()
+            managed_inbound_mode = request.form.get("xui_managed_inbound_mode", "legacy").strip().lower()
+            cdn_domain = request.form.get("xui_cdn_domain", "").strip()
+            cdn_port_raw = request.form.get("xui_cdn_port", "8443").strip()
+            cdn_ws_path = request.form.get("xui_cdn_ws_path", "").strip()
+            cdn_reject_unknown_sni = "1" if request.form.get("xui_cdn_reject_unknown_sni") == "on" else "0"
             tor_transport_mode = request.form.get("tor_transport_mode", "direct").strip().lower()
             tor_bridge_lines = request.form.get("tor_bridge_lines", "").strip()
             if base_url and not re.match(r"^https?://", base_url, re.I):
                 flash("آدرس 3x-ui باید با http:// یا https:// شروع شود.", "danger")
                 return redirect(url_for("settings"))
+            if managed_inbound_mode not in {"legacy", "cloudflare"}:
+                flash("پروفایل Inbound مدیریت‌شده معتبر نیست.", "danger")
+                return redirect(url_for("settings"))
+            if managed_inbound_mode == "cloudflare":
+                if not cdn_ws_path:
+                    cdn_ws_path = "/edge-" + secrets.token_urlsafe(18).replace("_", "").replace("-", "")
+                try:
+                    cdn_domain = normalize_cdn_domain(cdn_domain, base_url)
+                    cdn_port = normalize_cdn_port(cdn_port_raw)
+                    cdn_ws_path = normalize_ws_path(cdn_ws_path)
+                except CDNProfileError as exc:
+                    flash(str(exc), "danger")
+                    return redirect(url_for("settings"))
+                reserved_tunnel_ports = {
+                    int(link.get(key) or 0)
+                    for link in list_tunnel_links()
+                    for key in ("foreign_wg_port", "iran_frp_control_port", "iran_frp_proxy_port")
+                    if int(link.get(key) or 0) > 0
+                }
+                if cdn_port in reserved_tunnel_ports:
+                    flash("پورت CDN با یکی از پورت‌های زیرساخت Hybrid Tunnel تداخل دارد.", "danger")
+                    return redirect(url_for("settings"))
+            else:
+                try:
+                    cdn_port = int(cdn_port_raw or 8443)
+                except ValueError:
+                    cdn_port = 8443
+
             if tor_transport_mode not in {"direct", "obfs4"}:
                 flash("حالت اتصال Tor معتبر نیست.", "danger")
                 return redirect(url_for("settings"))
@@ -197,6 +252,11 @@ def make_app() -> Flask:
             set_setting("gateway_host", gateway_host)
             set_setting("xui_verify_tls", verify_tls)
             set_setting("xui_outbound_test_url", test_url)
+            set_setting("xui_managed_inbound_mode", managed_inbound_mode)
+            set_setting("xui_cdn_domain", cdn_domain)
+            set_setting("xui_cdn_port", str(cdn_port))
+            set_setting("xui_cdn_ws_path", cdn_ws_path)
+            set_setting("xui_cdn_reject_unknown_sni", cdn_reject_unknown_sni)
             set_setting("tor_transport_mode", tor_transport_mode)
             set_setting("tor_bridge_lines", tor_bridge_lines)
             try:
@@ -204,6 +264,13 @@ def make_app() -> Flask:
                 flash("تنظیمات 3x-ui و Tor ذخیره و اعمال شد.", "success")
             except Exception as exc:
                 flash(f"تنظیمات ذخیره شد، ولی اعمال تنظیمات Tor خطا داشت: {exc}", "warning")
+            try:
+                flash_sync_results(
+                    sync_all_panels(list_locations(), decrypt_secret),
+                    "Inbound و Routeهای مدیریت‌شده Reconcile شدند.",
+                )
+            except Exception as exc:
+                flash(f"تنظیمات ذخیره شد، ولی Sync پنل‌ها خطا داشت: {exc}", "warning")
             return redirect(url_for("settings"))
 
         bridge_lines = get_setting("tor_bridge_lines", "")
@@ -214,6 +281,11 @@ def make_app() -> Flask:
             gateway_host=get_setting("gateway_host"),
             xui_verify_tls=get_setting("xui_verify_tls", "1") == "1",
             xui_outbound_test_url=get_setting("xui_outbound_test_url", "https://www.google.com/generate_204"),
+            xui_managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
+            xui_cdn_domain=get_setting("xui_cdn_domain", ""),
+            xui_cdn_port=get_setting("xui_cdn_port", "8443") or "8443",
+            xui_cdn_ws_path=get_setting("xui_cdn_ws_path", ""),
+            xui_cdn_reject_unknown_sni=get_setting("xui_cdn_reject_unknown_sni", "1") == "1",
             has_token=bool(get_setting("xui_api_token")),
             tor_transport_mode=get_setting("tor_transport_mode", "direct") or "direct",
             tor_bridge_lines=bridge_lines,
@@ -234,8 +306,13 @@ def make_app() -> Flask:
             cfg = xui_current_settings()
             if not cfg.base_url.strip("/") or not cfg.api_token:
                 raise XUIError("ابتدا URL و API Token پنل را ذخیره کنید.")
-            result = XUIClient(cfg).test_connection()
-            flash(f"اتصال موفق بود؛ {result['inbound_count']} ورودی در 3x-ui پیدا شد.", "success")
+            client = XUIClient(cfg)
+            result = client.test_connection()
+            suffix = ""
+            if cfg.managed_inbound_mode == "cloudflare":
+                certs = client.get_web_cert_files()
+                suffix = f" Certificate پنل شناسایی شد: {certs['webCertFile']}."
+            flash(f"اتصال موفق بود؛ {result['inbound_count']} ورودی در 3x-ui پیدا شد.{suffix}", "success")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("settings"))
@@ -391,7 +468,11 @@ def make_app() -> Flask:
             raise ValueError("پورت Gateway معتبر نیست.")
         if not 1024 <= gateway_port <= 65535:
             raise ValueError("پورت Gateway باید بین 1024 و 65535 باشد.")
-        if xui_inbound_port_raw:
+        if get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare":
+            # Cloudflare mode uses one shared TLS/WebSocket inbound for every
+            # location, so per-location public inbound ports are intentionally disabled.
+            xui_inbound_port = 0
+        elif xui_inbound_port_raw:
             try:
                 xui_inbound_port = int(xui_inbound_port_raw)
             except ValueError:
@@ -454,6 +535,9 @@ def make_app() -> Flask:
             inbounds=available_xui_inbounds(),
             pasarguard_inbounds=available_pasarguard_inbounds(),
             pasarguard_tags=[],
+            xui_managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
+            xui_cdn_domain=get_setting("xui_cdn_domain", ""),
+            xui_cdn_port=get_setting("xui_cdn_port", "8443") or "8443",
         )
 
     @app.route("/locations/<int:location_id>/edit", methods=["GET", "POST"])
@@ -484,6 +568,9 @@ def make_app() -> Flask:
             inbounds=available_xui_inbounds(),
             pasarguard_inbounds=available_pasarguard_inbounds(),
             pasarguard_tags=pasarguard_tor_tags(str(location["slug"])),
+            xui_managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
+            xui_cdn_domain=get_setting("xui_cdn_domain", ""),
+            xui_cdn_port=get_setting("xui_cdn_port", "8443") or "8443",
         )
 
     @app.post("/locations/<int:location_id>/delete")

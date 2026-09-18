@@ -110,8 +110,15 @@
     {% else %}
     <div class="callout info"><strong>بعد از فعال‌سازی:</strong> مثلاً اگر 3x-ui روی <code>https://panel.example.com:2053</code> باشد و پورت 2096 را انتخاب کنید، Tor Location Manager با <code>https://panel.example.com:2096</code> باز می‌شود.</div>
     {% endif %}
-    <div class="callout warning"><strong>شرط مهم:</strong> برای استفاده مستقیم از فایل‌های SSL، 3x-ui و Tor Location Manager باید روی همان سرور باشند. اگر 3x-ui روی سرور دیگری باشد، سیستم فعال‌سازی را متوقف می‌کند و HTTP فعلی را خراب نمی‌کند.</div>
-    <div class="callout"><strong>تمدید خودکار:</strong> مسیر Certificate اصلی 3x-ui ذخیره می‌شود و Timer سیستم هر چند ساعت تغییر Certificate را Sync می‌کند؛ Private Key فقط روی همان سرور کپی می‌شود و در دیتابیس یا UI نمایش داده نمی‌شود.</div>
+    <label class="check check-card">
+      <input type="checkbox" name="panel_tls_cloudflare_fallback" {% if panel_tls_cloudflare_fallback %}checked{% endif %}>
+      <span><b>Fallback هوشمند برای Cloudflare</b><small>اگر Private Key گواهی 3x-ui فقط روی Cloudflare Edge باشد یا روی Host پیدا نشود، یک Origin TLS محلی ECDSA برای همین دامنه می‌سازد تا پنل روی HTTPS بالا بیاید.</small></span>
+    </label>
+    <div class="callout warning"><strong>حالت Fallback:</strong> رکورد دامنه باید در Cloudflare روی Proxied/Orange Cloud باشد و SSL/TLS Encryption Mode روی <code>Full</code> قرار گیرد. حالت <code>Full (strict)</code> با گواهی self-signed این Fallback کار نمی‌کند. اگر Certificate واقعی 3x-ui بعداً در دسترس شود، Sync بعدی خودکار دوباره همان را ترجیح می‌دهد.</div>
+    <div class="callout"><strong>تمدید خودکار:</strong> اگر Certificate واقعی 3x-ui قابل خواندن باشد همان فایل Sync می‌شود؛ در غیر این صورت گواهی Origin محلی قبل از نزدیک‌شدن به انقضا خودکار نوسازی می‌شود. Private Key در دیتابیس یا UI نمایش داده نمی‌شود.</div>
+    {% if panel_tls_last_source %}
+    <div class="callout {{ 'warning' if panel_tls_last_source == 'cloudflare-full-selfsigned' else 'success' }}"><strong>منبع TLS فعلی:</strong> <code>{{ panel_tls_last_source }}</code>{% if panel_tls_last_source == 'cloudflare-full-selfsigned' %}<br><small>Cloudflare Full لازم است.</small>{% endif %}</div>
+    {% endif %}
     <div class="actions"><button class="button primary" type="submit">{{ icon('shield') }} اعمال HTTPS پنل</button></div>
   </form>
 </section>

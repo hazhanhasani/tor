@@ -3,7 +3,7 @@
 {% block title %}لوکیشن‌ها | Tor Location Manager{% endblock %}
 {% block content %}
 <section class="page-head">
-  <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌ها</h1><p>هر لوکیشن یک Tor مستقل، Inbound اختصاصی 3x-ui، Gateway رمزنگاری‌شده و Route خودکار دارد.</p></div>
+  <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌ها</h1><p>هر لوکیشن یک Tor مستقل، Gateway رمزنگاری‌شده و Route خودکار دارد؛ در حالت Cloudflare، همه Locationها از یک Inbound مشترک TLS/WebSocket با Client اختصاصی استفاده می‌کنند.</p></div>
   <div class="page-actions">
     <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} بازسازی و Sync</button></form>
     <a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} افزودن لوکیشن</a>
@@ -40,13 +40,17 @@
     </div>
 
     <div class="location-route">
+      {% if xui_managed_inbound_mode == 'cloudflare' %}
+      <div class="route-node"><b>Cloudflare CDN</b><span>{{ xui_cdn_domain or 'CDN' }}:{{ xui_cdn_port }} · VLESS/WS/TLS</span></div><span class="route-arrow">→</span>
+      {% else %}
       <div class="route-node"><b>3x-ui Inbound</b><span>{{ loc.xui_inbound_port or 'Auto' }}</span></div><span class="route-arrow">→</span>
+      {% endif %}
       <div class="route-node"><b>SS2022 Gateway</b><span>{{ loc.gateway_port }}</span></div><span class="route-arrow">→</span>
       <div class="route-node"><b>Tor Exit {{ loc.country_code }}</b><span>SOCKS {{ loc.socks_port }}</span></div>
     </div>
 
     <div class="meta-grid">
-      <div class="meta-item"><span>Inbound Tag</span><strong class="ltr">torloc-in-{{ loc.slug }}</strong></div>
+      <div class="meta-item"><span>Inbound</span><strong class="ltr">{{ 'torloc-cdn / client:' ~ loc.slug if xui_managed_inbound_mode == 'cloudflare' else 'torloc-in-' ~ loc.slug }}</strong></div>
       <div class="meta-item"><span>Outbound Tag</span><strong class="ltr">torloc-{{ loc.slug }}</strong></div>
       <div class="meta-item"><span>Gateway Port</span><strong class="ltr">{{ loc.gateway_port }}/TCP</strong></div>
       <div class="meta-item"><span>Inboundهای اضافی</span><strong>{{ loc.inbound_tags|length if loc.inbound_tags else 0 }} مورد</strong></div>
@@ -54,6 +58,9 @@
 
     <div class="card-actions">
       <a class="button small" href="{{ url_for('location_edit', location_id=loc.id) }}">{{ icon('edit') }} ویرایش</a>
+      {% if xui_managed_inbound_mode == 'cloudflare' and loc.cdn_client_uri %}
+      <button class="button small" type="button" data-copy-value="{{ loc.cdn_client_uri }}">{{ icon('copy') }} کپی کانفیگ CDN</button>
+      {% endif %}
       <form method="post" action="{{ url_for('location_test', location_id=loc.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small" type="submit">{{ icon('pulse') }} تست خروجی</button></form>
       <form method="post" action="{{ url_for('location_delete', location_id=loc.id) }}" onsubmit="return confirm('لوکیشن {{ loc.name }} و Inbound/Outbound مدیریت‌شده آن حذف شود؟')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button small danger" type="submit">{{ icon('trash') }} حذف</button></form>
     </div>

@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from .config import HELPER_CMD
+from .config import HELPER_CMD, TLS_HELPER_CMD
 
 
 class RuntimeErrorPanel(RuntimeError):
@@ -21,6 +21,16 @@ def apply_runtime() -> None:
     )
     if result.returncode != 0:
         raise RuntimeErrorPanel(result.stdout.strip() or "Runtime helper failed")
+
+
+def apply_panel_tls() -> str:
+    result = subprocess.run(
+        shlex.split(TLS_HELPER_CMD), text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=45,
+    )
+    if result.returncode != 0:
+        raise RuntimeErrorPanel(result.stdout.strip() or "Panel TLS helper failed")
+    return result.stdout.strip()
 
 
 def unit_state(unit: str) -> dict[str, str]:

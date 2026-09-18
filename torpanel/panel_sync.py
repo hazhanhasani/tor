@@ -120,7 +120,11 @@ def xui_inbounds() -> list[dict[str, Any]]:
     if not xui_configured():
         return []
     rows = XUIClient(xui_settings()).list_inbounds()
-    return [row for row in rows if not str(row.get("tag") or "").startswith("torloc-in-")]
+    return [
+        row for row in rows
+        if not str(row.get("tag") or "").startswith("torloc-in-")
+        and str(row.get("tag") or "") != "torloc-cdn"
+    ]
 
 
 def pasarguard_inbounds() -> list[dict[str, Any]]:

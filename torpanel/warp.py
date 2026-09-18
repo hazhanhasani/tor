@@ -12,6 +12,16 @@ DOMAIN_RE = re.compile(
 
 WARP_COMPANION_DOMAINS = ("challenges.cloudflare.com",)
 
+WARP_DOMAIN_PRESETS = (
+    ("check-host.net", "Check-Host"),
+    ("google.com", "Google"),
+    ("youtube.com", "YouTube"),
+    ("chatgpt.com", "ChatGPT"),
+    ("openai.com", "OpenAI"),
+    ("github.com", "GitHub"),
+    ("discord.com", "Discord"),
+)
+
 
 class WarpAssistError(ValueError):
     pass

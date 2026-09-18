@@ -39,7 +39,11 @@
             {% else %}
             <label class="field"><span>پورت Inbound مدیریت‌شده در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>برای 3x-ui یک Inbound اختصاصی خودکار می‌سازد. PasarGuard از Inboundهای موجود Core استفاده می‌کند.</small></label>
             {% endif %}
-            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="31001" required><small>پورت SS2022 بین پنل و Gateway. دسترسی شبکه به این پورت را محدود نگه دارید.</small></label>
+            {% if xui_managed_inbound_mode == 'cloudflare' %}
+            <div class="field"><span>پورت Tor Gateway</span><div class="callout"><strong>{{ location.gateway_port if location else 'خودکار' }}</strong><br><small>در حالت CDN این پورت داخلی است و برای جلوگیری از تداخل به‌صورت خودکار تخصیص داده می‌شود.</small></div><input name="gateway_port" type="hidden" value="{{ location.gateway_port if location else '' }}"></div>
+            {% else %}
+            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="خالی = انتخاب خودکار"><small>اگر خالی بگذاری، پنل یک پورت آزاد برای SS2022 Gateway انتخاب می‌کند.</small></label>
+            {% endif %}
           </div>
           <div class="location-route" style="margin-bottom:0">
             <div class="route-node"><b>3x-ui / PasarGuard</b><span>Inbound انتخابی</span></div><span class="route-arrow">→</span>

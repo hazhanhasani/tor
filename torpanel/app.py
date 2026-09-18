@@ -364,6 +364,9 @@ def make_app() -> Flask:
             panel_tls_public_host=get_setting("panel_tls_public_host", ""),
             panel_tls_public_url=panel_public_url(),
             panel_https_ports=PANEL_HTTPS_PORTS,
+            panel_tls_cloudflare_fallback=get_setting("panel_tls_cloudflare_fallback", "1") == "1",
+            panel_tls_last_source=get_setting("panel_tls_last_source", ""),
+            panel_tls_last_error=get_setting("panel_tls_last_error", ""),
             warp_assist_enabled=get_setting("warp_assist_enabled", "0") == "1",
             warp_proxy_port=get_setting("warp_proxy_port", "40000") or "40000",
             warp_assist_domains=get_setting("warp_assist_domains", ""),
@@ -380,6 +383,7 @@ def make_app() -> Flask:
             "panel_tls_port",
             "panel_tls_source_cert",
             "panel_tls_source_key",
+            "panel_tls_cloudflare_fallback",
         )
         previous = {key: get_setting(key, "") for key in keys}
         try:
@@ -422,15 +426,27 @@ def make_app() -> Flask:
             set_setting("panel_tls_port", str(port))
             set_setting("panel_tls_source_cert", certs["webCertFile"])
             set_setting("panel_tls_source_key", certs["webKeyFile"])
+            set_setting(
+                "panel_tls_cloudflare_fallback",
+                "1" if request.form.get("panel_tls_cloudflare_fallback") == "on" else "0",
+            )
             output = apply_panel_tls()
             suffix = "" if port == 443 else f":{port}"
             url = f"https://{host}{suffix}"
-            flash(
-                f"SSL خود 3x-ui برای پنل فعال شد. بعد از Restart از {url} وارد شوید؛ دسترسی معمول با IP پذیرفته نمی‌شود.",
-                "success",
-            )
+            fallback_used = "cloudflare-full-selfsigned" in (output or "")
+            if fallback_used:
+                flash(
+                    f"HTTPS پنل روی {url} فعال شد. چون Private Key گواهی 3x-ui روی Host قابل دسترس نبود، "
+                    "Origin TLS محلی ساخته شد. برای این دامنه در Cloudflare حالت SSL/TLS را روی Full بگذارید، نه Full (strict).",
+                    "warning",
+                )
+            else:
+                flash(
+                    f"SSL محلی 3x-ui برای پنل فعال شد. بعد از Restart از {url} وارد شوید؛ دسترسی معمول با IP پذیرفته نمی‌شود.",
+                    "success",
+                )
             if output:
-                flash(output, "success")
+                flash(output, "success" if not fallback_used else "warning")
         except Exception as exc:
             for key, value in previous.items():
                 set_setting(key, value)

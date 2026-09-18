@@ -416,13 +416,25 @@ def _container_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Path, Pa
     return pairs
 
 
+def _is_tls_namespace_process(comm: str, cmdline: str) -> bool:
+    text = f"{comm} {cmdline}".lower()
+    # 3x-ui may launch Xray in a different mount namespace from its web process.
+    # Reverse proxies can also own the real certificate path while the x-ui API
+    # still reports that path. Restrict discovery to relevant TLS-serving
+    # processes rather than scanning every process namespace on the host.
+    return any(
+        token in text
+        for token in ("x-ui", "xray", "nginx", "caddy", "apache2", "httpd", "haproxy")
+    )
+
+
 def _proc_namespace_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Path, Path, str]]:
-    """Resolve certificate paths through the mount namespace of running x-ui processes.
+    """Resolve x-ui certificate paths through relevant process mount namespaces.
 
     This covers Docker/LXC/containerd setups where the x-ui API reports a path
-    such as /root/cert/... that exists only inside the container. The privileged
-    helper can still read it through /proc/<pid>/root without requiring Docker
-    socket access.
+    such as /root/cert/... that exists only inside the Xray, x-ui, or reverse
+    proxy namespace. The privileged helper reads it via /proc/<pid>/root without
+    requiring Docker socket access.
     """
     pairs: list[tuple[Path, Path, str]] = []
     proc = Path("/proc")
@@ -438,12 +450,16 @@ def _proc_namespace_tls_pairs(cert_path: Path, key_path: Path) -> list[tuple[Pat
             cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
         except OSError:
             continue
-        if "x-ui" not in comm and "x-ui" not in cmdline:
+        if not _is_tls_namespace_process(comm, cmdline):
             continue
         root = entry / "root"
         cert_candidate = root / str(cert_path).lstrip("/")
         key_candidate = root / str(key_path).lstrip("/")
-        pairs.append((cert_candidate, key_candidate, f"proc:{entry.name}:{comm or 'x-ui'}"))
+        # Only advertise namespaces where at least one reported path exists.
+        # This keeps diagnostics concise and avoids misleading proc candidates.
+        if not cert_candidate.exists() and not key_candidate.exists():
+            continue
+        pairs.append((cert_candidate, key_candidate, f"proc:{entry.name}:{comm or 'tls-process'}"))
     return pairs
 
 
@@ -503,8 +519,8 @@ def _resolve_panel_tls_source(
 
     detail = "; ".join(checked[:6])
     raise RuntimeError(
-        "فایل SSL اعلام‌شده توسط 3x-ui روی Host یا namespace پردازش x-ui پیدا نشد. "
-        "اگر پنل پشت Cloudflare/Nginx TLS-termination باشد، ممکن است 3x-ui خودش فایل SSL محلی نداشته باشد. "
+        "فایل SSL اعلام‌شده توسط 3x-ui روی Host یا namespace پردازش x-ui/Xray/Reverse Proxy پیدا نشد. "
+        "اگر دامنه فقط با Cloudflare Edge TLS باز می‌شود، Private Key آن گواهی روی این سرور وجود ندارد و قابل کپی نیست. "
         f"مسیرهای بررسی‌شده: {detail}"
     )
 

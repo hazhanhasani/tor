@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import PANEL_PORT
-from .db import list_locations, list_tunnel_links
+from .db import get_setting, list_locations, list_tunnel_links
 from .panel_sync import pasarguard_inbounds, xui_inbounds
 from .routing_state import pasarguard_tor_tags
 
@@ -140,13 +140,34 @@ def location_port_inventory() -> dict[str, Any]:
         errors.append(f"PasarGuard: {exc}")
 
     pg_tags = {str(loc.get("slug") or ""): pasarguard_tor_tags(str(loc.get("slug") or "")) for loc in locations}
+    reserved_ports = tunnel_infrastructure_ports()
     inventory = build_location_port_inventory(
         locations,
         xui_rows=xui_rows,
         pasarguard_rows=pg_rows,
         pasarguard_tags_by_slug=pg_tags,
-        reserved_ports=tunnel_infrastructure_ports(),
+        reserved_ports=reserved_ports,
     )
+
+    # Cloudflare mode uses one shared public VLESS/WS/TLS inbound for every
+    # Location. When this manager runs on the foreign node, the automatic port
+    # fabric must mirror that single CDN origin port through the Iran edge too.
+    if get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare":
+        cdn_port = _port(get_setting("xui_cdn_port", "8443"))
+        if cdn_port and cdn_port not in reserved_ports:
+            merged = set(inventory.get("ports") or [])
+            merged.add(cdn_port)
+            inventory["ports"] = sorted(merged)
+            inventory["port_count"] = len(merged)
+            for item in inventory.get("locations") or []:
+                loc_ports = set(item.get("ports") or [])
+                loc_ports.add(cdn_port)
+                item["ports"] = sorted(loc_ports)
+        elif cdn_port:
+            blocked = set(inventory.get("blocked_ports") or [])
+            blocked.add(cdn_port)
+            inventory["blocked_ports"] = sorted(blocked)
+
     if inventory.get("blocked_ports"):
         errors.append(
             "Port Fabric skipped ports reserved by the panel/tunnel infrastructure: "

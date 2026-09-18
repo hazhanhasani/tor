@@ -9,7 +9,13 @@ from functools import wraps
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
-from .config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, FLASK_SECRET_KEY
+from .config import (
+    ADMIN_PASSWORD_HASH,
+    ADMIN_USERNAME,
+    FLASK_SECRET_KEY,
+    PANEL_PUBLIC_HOST,
+    PANEL_TLS_ENABLED,
+)
 from .db import (
     create_location,
     delete_location,
@@ -23,6 +29,14 @@ from .db import (
     update_location,
 )
 from .panel_sync import pasarguard_inbounds as load_pasarguard_inbounds
+from .panel_tls import (
+    CLOUDFLARE_HTTPS_PORTS as PANEL_HTTPS_PORTS,
+    DEFAULT_PANEL_HTTPS_PORT,
+    PanelTLSError,
+    panel_public_url,
+    validate_panel_https_port,
+    xui_public_host,
+)
 from .panel_sync import sync_all_panels, xui_inbounds as load_xui_inbounds
 from .pasarguard import (
     PasarGuardClient,
@@ -36,7 +50,7 @@ from .routing_state import (
     pasarguard_tor_tags,
     set_pasarguard_tor_tags,
 )
-from .runtime import apply_runtime, journal_tail, service_active, test_exit, unit_state
+from .runtime import apply_panel_tls, apply_runtime, journal_tail, service_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
@@ -64,10 +78,35 @@ def make_app() -> Flask:
         raise RuntimeError("TORPANEL_ADMIN_PASSWORD_HASH is not configured")
     app = Flask(__name__)
     app.secret_key = FLASK_SECRET_KEY
-    app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", MAX_CONTENT_LENGTH=1024 * 1024)
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=bool(PANEL_TLS_ENABLED),
+        MAX_CONTENT_LENGTH=1024 * 1024,
+    )
     init_db()
     app.register_blueprint(tunnel_bp)
     app.jinja_env.globals["csrf_token"] = csrf_token
+
+    @app.before_request
+    def enforce_https_public_host():
+        if not PANEL_TLS_ENABLED or not PANEL_PUBLIC_HOST or request.path == "/healthz":
+            return None
+        host = request.host.partition(":")[0].strip("[]").lower()
+        if host != PANEL_PUBLIC_HOST:
+            return ("این پنل فقط از دامنه HTTPS تنظیم‌شده قابل دسترسی است.", 421)
+        return None
+
+    @app.after_request
+    def panel_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        if PANEL_TLS_ENABLED:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
 
     def login_required(fn):
         @wraps(fn)
@@ -296,7 +335,70 @@ def make_app() -> Flask:
             pasarguard_verify_tls=get_setting("pasarguard_verify_tls", "1") == "1",
             pasarguard_restart_nodes=get_setting("pasarguard_restart_nodes", "1") == "1",
             pasarguard_has_key=bool(get_setting("pasarguard_api_key")),
+            panel_tls_enabled=get_setting("panel_tls_enabled", "0") == "1",
+            panel_tls_port=get_setting("panel_tls_port", str(DEFAULT_PANEL_HTTPS_PORT)) or str(DEFAULT_PANEL_HTTPS_PORT),
+            panel_tls_public_host=get_setting("panel_tls_public_host", ""),
+            panel_tls_public_url=panel_public_url(),
+            panel_https_ports=PANEL_HTTPS_PORTS,
         )
+
+    @app.post("/settings/panel-tls")
+    @login_required
+    def settings_panel_tls():
+        validate_csrf(request.form.get("_csrf"))
+        enabled = request.form.get("panel_tls_enabled") == "on"
+        keys = (
+            "panel_tls_enabled",
+            "panel_tls_public_host",
+            "panel_tls_port",
+            "panel_tls_source_cert",
+            "panel_tls_source_key",
+        )
+        previous = {key: get_setting(key, "") for key in keys}
+        try:
+            if not enabled:
+                set_setting("panel_tls_enabled", "0")
+                output = apply_panel_tls()
+                flash(
+                    "HTTPS اختصاصی پنل غیرفعال شد؛ سرویس تا چند ثانیه دیگر به HTTP اضطراری روی پورت 8787 برمی‌گردد.",
+                    "warning",
+                )
+                if output:
+                    flash(output, "success")
+                return redirect(url_for("settings"))
+
+            cfg = xui_current_settings()
+            if not cfg.base_url.strip("/") or not cfg.api_token:
+                raise PanelTLSError("ابتدا اتصال 3x-ui و API Token را ذخیره کنید.")
+            host = xui_public_host(cfg.base_url)
+            port = validate_panel_https_port(
+                request.form.get("panel_tls_port", str(DEFAULT_PANEL_HTTPS_PORT)),
+                xui_base_url=cfg.base_url,
+            )
+            certs = XUIClient(cfg).get_web_cert_files()
+            set_setting("panel_tls_enabled", "1")
+            set_setting("panel_tls_public_host", host)
+            set_setting("panel_tls_port", str(port))
+            set_setting("panel_tls_source_cert", certs["webCertFile"])
+            set_setting("panel_tls_source_key", certs["webKeyFile"])
+            output = apply_panel_tls()
+            suffix = "" if port == 443 else f":{port}"
+            url = f"https://{host}{suffix}"
+            flash(
+                f"SSL خود 3x-ui برای پنل فعال شد. بعد از Restart از {url} وارد شوید؛ دسترسی معمول با IP پذیرفته نمی‌شود.",
+                "success",
+            )
+            if output:
+                flash(output, "success")
+        except Exception as exc:
+            for key, value in previous.items():
+                set_setting(key, value)
+            try:
+                apply_panel_tls()
+            except Exception:
+                pass
+            flash(f"فعال‌سازی HTTPS پنل انجام نشد: {exc}", "danger")
+        return redirect(url_for("settings"))
 
     @app.post("/settings/test")
     @login_required

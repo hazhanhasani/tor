@@ -197,7 +197,7 @@ write_state "running" "Backup created; installing release..." "$BACKUP_DIR"
 [[ -d "$APP_DIR" ]] && rsync -a "$APP_DIR/" "$BACKUP_DIR/app/"
 [[ -f "$ETC_DIR/panel.env" ]] && cp -a "$ETC_DIR/panel.env" "$BACKUP_DIR/panel.env"
 [[ -f /etc/sudoers.d/tor-location-manager ]] && cp -a /etc/sudoers.d/tor-location-manager "$BACKUP_DIR/sudoers"
-for unit in tor-location-panel.service tor-location-gateway.service 'tor-location@.service'; do
+for unit in tor-location-panel.service tor-location-panel-tls-sync.service tor-location-panel-tls-sync.timer tor-location-gateway.service 'tor-location@.service'; do
   [[ -f "/etc/systemd/system/$unit" ]] && cp -a "/etc/systemd/system/$unit" "$BACKUP_DIR/$unit"
 done
 [[ -f /usr/local/sbin/tor-location-manager-update ]] && cp -a /usr/local/sbin/tor-location-manager-update "$BACKUP_DIR/updater"
@@ -216,7 +216,7 @@ rollback() {
   rsync -a "$BACKUP_DIR/app/" "$APP_DIR/"
   [[ -f "$BACKUP_DIR/panel.env" ]] && cp -a "$BACKUP_DIR/panel.env" "$ETC_DIR/panel.env"
   [[ -f "$BACKUP_DIR/sudoers" ]] && cp -a "$BACKUP_DIR/sudoers" /etc/sudoers.d/tor-location-manager
-  for unit in tor-location-panel.service tor-location-gateway.service 'tor-location@.service'; do
+  for unit in tor-location-panel.service tor-location-panel-tls-sync.service tor-location-panel-tls-sync.timer tor-location-gateway.service 'tor-location@.service'; do
     [[ -f "$BACKUP_DIR/$unit" ]] && cp -a "$BACKUP_DIR/$unit" "/etc/systemd/system/$unit"
   done
   [[ -f "$BACKUP_DIR/updater" ]] && cp -a "$BACKUP_DIR/updater" /usr/local/sbin/tor-location-manager-update
@@ -238,7 +238,13 @@ for _ in $(seq 1 20); do
   if systemctl is-active --quiet tor-location-panel.service; then
     PORT="$(awk -F= '$1=="TORPANEL_PORT"{print $2}' "$ETC_DIR/panel.env" | tail -1)"
     PORT="${PORT:-8787}"
-    if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    TLS_ENABLED="$(awk -F= '$1=="TORPANEL_TLS_ENABLED"{print $2}' "$ETC_DIR/panel.env" | tail -1)"
+    TLS_ENABLED="${TLS_ENABLED:-0}"
+    if [[ "$TLS_ENABLED" == "1" ]]; then
+      if curl -kfsS --max-time 2 "https://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    else
+      if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    fi
   fi
   sleep 1
 done

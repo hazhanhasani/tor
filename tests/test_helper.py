@@ -96,11 +96,12 @@ def test_atomic_write_is_idempotent(tmp_path):
     assert helper.atomic_write(path, "same\n") is False
 
 
-def test_gateway_routes_selected_domains_to_warp_before_tor(monkeypatch):
+
+def test_gateway_never_adds_legacy_local_warp_proxy(monkeypatch):
     settings = {
         "warp_assist_enabled": "1",
         "warp_proxy_port": "40000",
-        "warp_assist_domains": "check-host.net\nexample.com",
+        "warp_assist_domains": "check-host.net",
     }
     monkeypatch.setattr(helper, "get_setting", lambda key, default="": settings.get(key, default))
     loc = {
@@ -109,14 +110,8 @@ def test_gateway_routes_selected_domains_to_warp_before_tor(monkeypatch):
         "ss_password": encrypt_secret(base64.b64encode(b"x" * 32).decode()),
     }
     cfg = gateway_config([loc])
-    warp = next(out for out in cfg["outbounds"] if out.get("tag") == "warp-assist")
-    assert warp["protocol"] == "socks"
-    assert warp["settings"] == {"address": "127.0.0.1", "port": 40000}
-    inbound = cfg["inbounds"][0]
-    assert inbound["sniffing"]["enabled"] is True
-    assert inbound["sniffing"]["routeOnly"] is True
-    rules = cfg["routing"]["rules"]
-    assert rules[0]["outboundTag"] == "blocked"
-    assert rules[1]["outboundTag"] == "warp-assist"
-    assert rules[1]["domain"] == ["domain:check-host.net", "domain:example.com", "domain:challenges.cloudflare.com"]
-    assert rules[2]["outboundTag"] == "tor-de-test"
+    assert all(out.get("tag") != "warp-assist" for out in cfg["outbounds"])
+    assert cfg["inbounds"][0]["sniffing"] == {"enabled": False}
+    assert [rule["outboundTag"] for rule in cfg["routing"]["rules"]] == [
+        "blocked", "tor-de-test"
+    ]

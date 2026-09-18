@@ -70,7 +70,7 @@ jobs:
           set -euo pipefail
           python -m compileall -q torpanel
           python -m py_compile scripts/tlm-node-agent.py scripts/tlm-port-fabric.py
-          bash -n install.sh bootstrap.sh scripts/tor-location-manager-update scripts/install-xray scripts/tlm-node-bootstrap.sh
+          bash -n install.sh bootstrap.sh scripts/tor-location-manager-update scripts/install-xray scripts/install-warp scripts/tlm-node-bootstrap.sh
           pytest -q
 
       - name: Build release package

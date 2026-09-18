@@ -352,6 +352,54 @@ def make_app() -> Flask:
 
         bridge_lines = get_setting("tor_bridge_lines", "")
         bridge_count = len([x for x in bridge_lines.splitlines() if x.strip() and not x.strip().startswith("#")])
+        try:
+            xui_warp_domains = json.loads(get_setting("xui_warp_domains_json", '["check-host.net"]') or "[]")
+            if not isinstance(xui_warp_domains, list):
+                xui_warp_domains = ["check-host.net"]
+        except Exception:
+            xui_warp_domains = ["check-host.net"]
+        try:
+            xui_warp_inbound_tags = json.loads(get_setting("xui_warp_inbound_tags", "[]") or "[]")
+            if not isinstance(xui_warp_inbound_tags, list):
+                xui_warp_inbound_tags = []
+        except Exception:
+            xui_warp_inbound_tags = []
+
+        xui_warp_available_inbounds: list[dict] = []
+        xui_warp_status = {
+            "registered": False,
+            "outbound": False,
+            "error": "",
+        }
+        if get_setting("xui_base_url") and get_setting("xui_api_token"):
+            try:
+                warp_client = XUIClient(xui_current_settings())
+                xui_warp_available_inbounds = warp_client.list_inbounds()
+                cfg_now = warp_client.get_xray_config()
+                cfg_outbounds = cfg_now.get("outbounds") if isinstance(cfg_now.get("outbounds"), list) else []
+                xui_warp_status["outbound"] = any(
+                    isinstance(row, dict)
+                    and str(row.get("tag") or "") == "warp"
+                    and str(row.get("protocol") or "").lower() == "wireguard"
+                    for row in cfg_outbounds
+                )
+                try:
+                    xui_warp_status["registered"] = bool(warp_client.warp_data())
+                except Exception:
+                    xui_warp_status["registered"] = False
+            except Exception as exc:
+                xui_warp_status["error"] = str(exc)
+        if (
+            get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
+            and not any(str(row.get("tag") or "") == CDN_MANAGED_TAG for row in xui_warp_available_inbounds)
+        ):
+            xui_warp_available_inbounds.insert(0, {
+                "id": None,
+                "tag": CDN_MANAGED_TAG,
+                "remark": "Cloudflare CDN مدیریت‌شده",
+                "protocol": "vless",
+                "port": int(get_setting("xui_cdn_port", "8443") or 8443),
+            })
         return render_template(
             "settings.html",
             xui_base_url=get_setting("xui_base_url"),
@@ -386,11 +434,11 @@ def make_app() -> Flask:
             panel_tls_last_error=get_setting("panel_tls_last_error", ""),
             xui_warp_enabled=get_setting("xui_warp_enabled", "0") == "1",
             xui_warp_mode=get_setting("xui_warp_mode", "domains") or "domains",
-            xui_warp_domains=json.loads(get_setting("xui_warp_domains_json", '["check-host.net"]') or "[]"),
-            xui_warp_inbound_tags=json.loads(get_setting("xui_warp_inbound_tags", "[]") or "[]"),
+            xui_warp_domains=xui_warp_domains,
+            xui_warp_inbound_tags=xui_warp_inbound_tags,
             xui_warp_domain_presets=WARP_DOMAIN_PRESETS,
-            xui_warp_available_inbounds=_settings_warp_inbounds(),
-            xui_warp_status=_settings_warp_status(),
+            xui_warp_available_inbounds=xui_warp_available_inbounds,
+            xui_warp_status=xui_warp_status,
         )
 
     @app.post("/settings/panel-tls")

@@ -8,7 +8,7 @@ def test_normalize_warp_domains_accepts_urls_wildcards_and_deduplicates():
         "https://check-host.net/path\n*.example.com\nEXAMPLE.com.\n# comment"
     )
     assert result == ["check-host.net", "example.com"]
-    assert xray_domain_rules(result) == ["domain:check-host.net", "domain:example.com"]
+    assert xray_domain_rules(result) == ["domain:check-host.net", "domain:example.com", "domain:challenges.cloudflare.com"]
 
 
 def test_normalize_warp_domains_rejects_invalid_host():

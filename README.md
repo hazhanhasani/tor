@@ -159,7 +159,7 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 sudo /usr/local/sbin/tor-location-manager-install-warp
 ```
 
-Installer رسمی بسته `cloudflare-warp` را از repository کلادفلر نصب می‌کند، WARP را در Local Proxy mode روی `127.0.0.1:40000` راه‌اندازی می‌کند و با `cdn-cgi/trace` بررسی می‌کند که `warp=on` یا `warp=plus` باشد.
+Installer رسمی بسته `cloudflare-warp` را از repository کلادفلر نصب می‌کند، پروتکل Tunnel را روی **MASQUE** قرار می‌دهد، WARP را در Local Proxy mode روی `127.0.0.1:40000` راه‌اندازی می‌کند و با `cdn-cgi/trace` بررسی می‌کند که `warp=on` یا `warp=plus` باشد. نسخه‌های جدید WARP برای Proxy mode به MASQUE نیاز دارند.
 
 سپس در **اتصال و شبکه → WARP Assist** قابلیت را فعال و دامنه‌ها را خط‌به‌خط وارد کنید، مثلاً:
 
@@ -210,7 +210,9 @@ sudo /opt/tor-location-manager/venv/bin/python -m torpanel.helper panel-tls-disa
 
 پنل دوباره روی `http://SERVER_IP:8787` بالا می‌آید.
 
-> این قابلیت برای استفاده مستقیم از فایل SSL نیاز دارد 3x-ui و Tor Location Manager روی یک Host باشند. اگر 3x-ui روی سرور دیگری باشد، فعال‌سازی متوقف می‌شود و تنظیم قبلی پنل حفظ می‌شود.
+اگر Private Key گواهی 3x-ui روی Host، Docker/Podman mount یا namespace پردازش x-ui/Xray/Reverse Proxy پیدا شود، همان Certificate به‌صورت امن Sync می‌شود. اگر پیدا نشود و **Cloudflare Fallback** روشن باشد، پروژه برای همان hostname یک Origin TLS محلی ECDSA می‌سازد تا پنل روی HTTPS بالا بیاید. در این حالت رکورد DNS باید Proxied باشد و Cloudflare SSL/TLS Encryption Mode روی **Full** قرار بگیرد؛ **Full (strict)** گواهی self-signed این fallback را قبول نمی‌کند. در Syncهای بعدی، اگر Certificate واقعی x-ui قابل خواندن شود، آن به‌صورت خودکار دوباره اولویت می‌گیرد.
+
+> Cloudflare Fallback برای حل حالتی است که مرورگر گواهی Cloudflare Edge را می‌بیند ولی Private Key آن گواهی اصلاً روی Origin وجود ندارد. این fallback کلید Cloudflare Edge را استخراج یا کپی نمی‌کند.
 
 ## بروزرسانی از داخل پنل
 

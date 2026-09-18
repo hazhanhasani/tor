@@ -47,9 +47,16 @@ if ! warp-cli --accept-tos registration show >/dev/null 2>&1; then
   warp-cli --accept-tos registration new
 fi
 
-echo "[4/5] Enabling Local Proxy mode on 127.0.0.1:$PORT..."
+echo "[4/5] Enabling MASQUE Local Proxy mode on 127.0.0.1:$PORT..."
+# Current Cloudflare clients require MASQUE for Proxy mode. Keep the explicit
+# protocol selection so an older WireGuard preference cannot silently break it.
+warp-cli --accept-tos tunnel protocol set MASQUE
 warp-cli --accept-tos mode proxy
-warp-cli --accept-tos proxy port "$PORT"
+if ! warp-cli --accept-tos proxy port "$PORT"; then
+  # Compatibility with older warp-cli releases.
+  warp-cli --accept-tos set-proxy-port "$PORT"
+fi
+warp-cli --accept-tos disconnect >/dev/null 2>&1 || true
 warp-cli --accept-tos connect
 
 echo "[5/5] Verifying WARP egress..."
@@ -64,10 +71,20 @@ done
 
 if [[ "$ok" -ne 1 ]]; then
   echo "WARP was installed, but proxy verification failed."
-  echo "Check: warp-cli status"
-  echo "Check: warp-cli settings"
+  echo "Status:"
+  warp-cli --accept-tos status || true
+  echo "Settings:"
+  warp-cli --accept-tos settings || true
+  echo "Diagnostics: sudo warp-diag"
   exit 1
 fi
 
-echo "WARP Local Proxy is ready on 127.0.0.1:$PORT"
+if command -v ss >/dev/null 2>&1; then
+  ss -lnt 2>/dev/null | grep -qE "127\.0\.0\.1:$PORT|\*:$PORT|0\.0\.0\.0:$PORT" || {
+    echo "WARP trace succeeded but the expected local proxy listener was not found on port $PORT."
+    exit 1
+  }
+fi
+
+echo "WARP Local Proxy is ready on 127.0.0.1:$PORT using MASQUE."
 echo "Use Tor Location Manager -> اتصال و شبکه -> WARP Assist to choose domains."

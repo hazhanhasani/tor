@@ -400,6 +400,11 @@ def make_app() -> Flask:
                 "protocol": "vless",
                 "port": int(get_setting("xui_cdn_port", "8443") or 8443),
             })
+        if (
+            get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
+            and not xui_warp_inbound_tags
+        ):
+            xui_warp_inbound_tags = [CDN_MANAGED_TAG]
         return render_template(
             "settings.html",
             xui_base_url=get_setting("xui_base_url"),

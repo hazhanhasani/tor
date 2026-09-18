@@ -19,6 +19,7 @@ from cryptography.x509.oid import NameOID
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links, set_setting
 from .security import decrypt_secret
+from .warp import normalize_warp_domains, xray_domain_rules
 
 NODE_AGENT_CONFIG = Path("/etc/tor-location-node/agent.json")
 PANEL_TLS_DIR = Path("/etc/tor-location-manager/tls")
@@ -180,6 +181,19 @@ def gateway_config(locations: list[dict]) -> dict:
     inbounds = []
     outbounds = [{"tag": "blocked", "protocol": "blackhole", "settings": {}}]
     rules = []
+
+    warp_enabled = (get_setting("warp_assist_enabled", "0") or "0") == "1"
+    try:
+        warp_port = int(get_setting("warp_proxy_port", "40000") or 40000)
+    except (TypeError, ValueError):
+        warp_port = 40000
+    warp_domains = normalize_warp_domains(get_setting("warp_assist_domains", "")) if warp_enabled else []
+    if warp_enabled and warp_domains:
+        outbounds.append({
+            "tag": "warp-assist",
+            "protocol": "socks",
+            "settings": {"address": "127.0.0.1", "port": warp_port},
+        })
     for loc in locations:
         slug = loc["slug"]
         inbound_tag = f"gateway-{slug}"
@@ -189,6 +203,12 @@ def gateway_config(locations: list[dict]) -> dict:
             "protocol": "shadowsocks",
             "settings": {"network": "tcp", "method": loc["ss_method"],
                          "password": decrypt_secret(loc["ss_password"])},
+            "sniffing": {
+                "enabled": bool(warp_enabled and warp_domains),
+                "destOverride": ["http", "tls"],
+                "metadataOnly": False,
+                "routeOnly": True,
+            },
         })
         outbounds.append({
             "tag": tor_tag, "protocol": "socks",
@@ -196,6 +216,14 @@ def gateway_config(locations: list[dict]) -> dict:
         })
         rules.append({"type": "field", "inboundTag": [inbound_tag], "network": "udp",
                       "outboundTag": "blocked"})
+        if warp_enabled and warp_domains:
+            rules.append({
+                "type": "field",
+                "inboundTag": [inbound_tag],
+                "network": "tcp",
+                "domain": xray_domain_rules(warp_domains),
+                "outboundTag": "warp-assist",
+            })
         rules.append({"type": "field", "inboundTag": [inbound_tag], "network": "tcp",
                       "outboundTag": tor_tag})
     return {"log": {"loglevel": "warning"}, "inbounds": inbounds, "outbounds": outbounds,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tor-location-manager"
-version = "1.9.1"
+version = "1.9.2"
 description = "Multi-panel Tor egress, Cloudflare CDN inbound, x-ui SSL web panel, and hybrid Iran/foreign tunnel manager with 3x-ui and PasarGuard routing"
 requires-python = ">=3.10"
 dependencies = [

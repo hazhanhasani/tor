@@ -1,6 +1,8 @@
 import base64
 
 from torpanel.xui import (
+    XUIClient,
+    XUISettings,
     build_synced_config,
     derive_managed_inbound_password,
     managed_inbound_payload,
@@ -81,3 +83,114 @@ def test_normalize_api_token_accepts_raw_and_bearer():
     assert normalize_api_token(" abc123 ") == "abc123"
     assert normalize_api_token("Bearer abc123") == "abc123"
     assert normalize_api_token("bearer   abc123 ") == "abc123"
+
+
+def test_native_warp_rule_precedes_tor_and_is_idempotent():
+    settings = XUISettings(
+        base_url="https://panel.example.com/",
+        api_token="token",
+        gateway_host="203.0.113.5",
+        verify_tls=True,
+        managed_inbound_mode="cloudflare",
+        cdn_domain="edge.example.com",
+        cdn_port=8443,
+        cdn_ws_path="/edge",
+    )
+    original = {
+        "outbounds": [
+            {"tag": "direct", "protocol": "freedom", "settings": {}},
+            {"tag": "warp", "protocol": "wireguard", "settings": {"secretKey": "x"}},
+        ],
+        "routing": {
+            "rules": [
+                {
+                    "type": "field",
+                    "ruleTag": "torloc-warp",
+                    "inboundTag": ["torloc-cdn"],
+                    "domain": ["domain:old.example"],
+                    "outboundTag": "warp",
+                }
+            ]
+        },
+    }
+    locations = [{
+        "slug": "de-123",
+        "name": "Germany",
+        "enabled": True,
+        "inbound_tags": [],
+        "gateway_port": 31001,
+        "xui_inbound_port": 0,
+        "ss_method": "2022-blake3-aes-128-gcm",
+        "ss_password": "enc",
+    }]
+    result = build_synced_config(
+        original,
+        locations,
+        "203.0.113.5",
+        fake_decrypt,
+        settings,
+        warp_enabled=True,
+        warp_mode="domains",
+        warp_domains=["check-host.net"],
+        warp_inbound_tags=["torloc-cdn"],
+    )
+    warp_rules = [
+        rule for rule in result["routing"]["rules"]
+        if rule.get("ruleTag") == "torloc-warp"
+    ]
+    assert len(warp_rules) == 1
+    assert warp_rules[0]["outboundTag"] == "warp"
+    assert warp_rules[0]["inboundTag"] == ["torloc-cdn"]
+    assert warp_rules[0]["domain"] == [
+        "domain:check-host.net",
+        "domain:challenges.cloudflare.com",
+    ]
+    assert result["routing"]["rules"].index(warp_rules[0]) < next(
+        i for i, rule in enumerate(result["routing"]["rules"])
+        if rule.get("outboundTag") == "torloc-de-123"
+    )
+
+
+def test_build_native_3xui_warp_outbound_shape():
+    data = {
+        "private_key": "private-base64",
+        "client_id": base64.b64encode(bytes([1, 2, 3])).decode(),
+    }
+    config = {
+        "config": {
+            "client_id": data["client_id"],
+            "interface": {
+                "addresses": {
+                    "v4": "172.16.0.2",
+                    "v6": "2606:4700:110:8abc::2",
+                }
+            },
+            "peers": [{
+                "public_key": "peer-public",
+                "endpoint": {"host": "engage.cloudflareclient.com:2408"},
+            }],
+        }
+    }
+    outbound = XUIClient.build_warp_outbound(data, config)
+    assert outbound["tag"] == "warp"
+    assert outbound["protocol"] == "wireguard"
+    settings = outbound["settings"]
+    assert settings["mtu"] == 1420
+    assert settings["secretKey"] == "private-base64"
+    assert settings["address"] == [
+        "172.16.0.2/32",
+        "2606:4700:110:8abc::2/128",
+    ]
+    assert settings["reserved"] == [1, 2, 3]
+    assert settings["domainStrategy"] == "ForceIPv4v6"
+    assert settings["noKernelTun"] is True
+    assert settings["peers"] == [{
+        "publicKey": "peer-public",
+        "endpoint": "engage.cloudflareclient.com:2408",
+    }]
+
+
+def test_wireguard_keypair_is_raw_base64_32_bytes():
+    private_key, public_key = XUIClient._wireguard_keypair()
+    assert len(base64.b64decode(private_key)) == 32
+    assert len(base64.b64decode(public_key)) == 32

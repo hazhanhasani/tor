@@ -366,6 +366,7 @@ def _schedule_panel_restart() -> None:
         "/bin/systemctl",
         "restart",
         "tor-location-panel.service",
+        "tor-location-panel-redirect.service",
         check=False,
     )
     if result.returncode != 0:

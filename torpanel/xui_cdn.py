@@ -83,19 +83,33 @@ def derive_vless_id(location: dict[str, Any], decrypt_password) -> str:
     return str(uuid.UUID(bytes=bytes(raw)))
 
 
+def _derive_sub_id(location: dict[str, Any], decrypt_password) -> str:
+    gateway_secret = decrypt_password(location["ss_password"]).encode("utf-8")
+    material = (
+        b"tor-location-manager:cloudflare-subid:v1\x00"
+        + str(location["slug"]).encode("utf-8")
+        + b"\x00"
+        + gateway_secret
+    )
+    raw = bytearray(hashlib.sha256(material).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
 def _client(location: dict[str, Any], decrypt_password) -> dict[str, Any]:
     return {
         "id": derive_vless_id(location, decrypt_password),
-        "flow": "",
         "email": managed_client_email(location),
+        "flow": "",
         "limitIp": 0,
         "totalGB": 0,
         "expiryTime": 0,
         "enable": True,
         "tgId": 0,
-        "subId": "",
-        "reset": 0,
+        "subId": _derive_sub_id(location, decrypt_password),
         "comment": f"Tor {str(location.get('country_code') or '').upper()} · {location.get('name') or location.get('slug')}",
+        "reset": 0,
     }
 
 
@@ -134,36 +148,52 @@ def build_cdn_inbound_payload(
         "settings": {
             "clients": clients,
             "decryption": "none",
-            "fallbacks": [],
+            "encryption": "none",
         },
         "streamSettings": {
             "network": "ws",
-            "security": "tls",
-            "tlsSettings": {
-                "serverName": domain,
-                "minVersion": "1.2",
-                "maxVersion": "1.3",
-                "rejectUnknownSni": bool(settings.cdn_reject_unknown_sni),
-                "alpn": ["http/1.1"],
-                "certificates": [{
-                    "certificateFile": cert_file,
-                    "keyFile": key_file,
-                    "oneTimeLoading": False,
-                    "usage": "encipherment",
-                }],
-            },
             "wsSettings": {
                 "acceptProxyProtocol": False,
                 "path": path,
+                "host": domain,
+                "headers": {
+                    "Host": domain,
+                },
                 "heartbeatPeriod": 30,
+            },
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": domain,
+                # Keep TLS 1.2 as the minimum even though 3x-ui allows 1.0.
+                # It matches modern Cloudflare origins while avoiding legacy TLS.
+                "minVersion": "1.2",
+                "maxVersion": "1.3",
+                "cipherSuites": "",
+                "rejectUnknownSni": bool(settings.cdn_reject_unknown_sni),
+                "disableSystemRoot": False,
+                "enableSessionResumption": False,
+                "certificates": [{
+                    "ocspStapling": 0,
+                    "oneTimeLoading": False,
+                    "usage": "encipherment",
+                    "buildChain": False,
+                    "certificateFile": cert_file,
+                    "keyFile": key_file,
+                    "useFile": True,
+                }],
+                "alpn": ["h3", "h2", "http/1.1"],
+                "echServerKeys": "",
+                "settings": {
+                    "fingerprint": "randomized",
+                    "echConfigList": "",
+                    "pinnedPeerCertSha256": [],
+                    "verifyPeerCertByName": "",
+                },
             },
         },
         "tag": CDN_MANAGED_TAG,
         "sniffing": {
             "enabled": False,
-            "destOverride": ["http", "tls", "quic", "fakedns"],
-            "metadataOnly": False,
-            "routeOnly": False,
         },
     }
 
@@ -225,7 +255,12 @@ def cdn_inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bo
 
     current_ws = _obj(current_stream.get("wsSettings"))
     expected_ws = expected_stream["wsSettings"]
-    if str(current_ws.get("path") or "") != str(expected_ws["path"]):
+    for key in ("path", "host"):
+        if str(current_ws.get(key) or "") != str(expected_ws[key]):
+            return False
+    current_headers = _obj(current_ws.get("headers"))
+    expected_headers = expected_ws["headers"]
+    if str(current_headers.get("Host") or "") != str(expected_headers["Host"]):
         return False
     if int(current_ws.get("heartbeatPeriod") or 0) != int(expected_ws["heartbeatPeriod"]):
         return False
@@ -239,13 +274,18 @@ def cdn_inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bo
         return False
     if list(current_tls.get("alpn") or []) != list(expected_tls["alpn"]):
         return False
+    for key in ("disableSystemRoot", "enableSessionResumption"):
+        if bool(current_tls.get(key)) != bool(expected_tls[key]):
+            return False
     current_certs = current_tls.get("certificates") or []
     expected_certs = expected_tls["certificates"]
     if not current_certs or not isinstance(current_certs[0], dict):
         return False
-    for key in ("certificateFile", "keyFile"):
+    for key in ("certificateFile", "keyFile", "usage"):
         if str(current_certs[0].get(key) or "") != str(expected_certs[0].get(key) or ""):
             return False
+    if bool(current_certs[0].get("useFile", False)) is not True:
+        return False
     return True
 
 
@@ -318,7 +358,7 @@ def managed_cdn_client_uri(location: dict[str, Any], settings: Any, decrypt_pass
         "type": "ws",
         "host": domain,
         "path": path,
-        "alpn": "http/1.1",
+        "alpn": "h3,h2,http/1.1",
     })
     label = quote(f"Tor {str(location.get('country_code') or '').upper()} · {location.get('name') or location.get('slug')}")
     return f"vless://{client_id}@{domain}:{port}?{query}#{label}"

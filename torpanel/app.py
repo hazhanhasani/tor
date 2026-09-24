@@ -10,6 +10,7 @@ from functools import wraps
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
+from .countries import TOR_COUNTRIES, TOR_COUNTRY_BY_CODE
 from .config import (
     ADMIN_PASSWORD_HASH,
     ADMIN_USERNAME,
@@ -804,10 +805,11 @@ def make_app() -> Flask:
         inbound_tags = [x for x in request.form.getlist("inbound_tags") if x]
         pg_inbound_tags = [x for x in request.form.getlist("pasarguard_inbound_tags") if x]
         enabled = request.form.get("enabled") == "on"
+        country = TOR_COUNTRY_BY_CODE.get(country_code)
+        if country is None:
+            raise ValueError("کشور خروجی Tor معتبر نیست؛ یک کشور را از فهرست انتخاب کنید.")
         if not name:
-            raise ValueError("نام لوکیشن الزامی است.")
-        if not re.fullmatch(r"[A-Z]{2}", country_code):
-            raise ValueError("کد کشور باید دو حرفی باشد؛ مانند DE یا NL.")
+            name = country["name"]
         cloudflare_mode = get_setting("xui_managed_inbound_mode", "legacy") == "cloudflare"
         existing = get_location(existing_id) if existing_id else None
         if cloudflare_mode:
@@ -907,6 +909,7 @@ def make_app() -> Flask:
             xui_managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
             xui_cdn_domain=get_setting("xui_cdn_domain", ""),
             xui_cdn_port=get_setting("xui_cdn_port", "8443") or "8443",
+            tor_countries=TOR_COUNTRIES,
         )
 
     @app.route("/locations/<int:location_id>/edit", methods=["GET", "POST"])
@@ -940,6 +943,7 @@ def make_app() -> Flask:
             xui_managed_inbound_mode=get_setting("xui_managed_inbound_mode", "legacy") or "legacy",
             xui_cdn_domain=get_setting("xui_cdn_domain", ""),
             xui_cdn_port=get_setting("xui_cdn_port", "8443") or "8443",
+            tor_countries=TOR_COUNTRIES,
         )
 
     @app.post("/locations/<int:location_id>/delete")

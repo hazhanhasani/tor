@@ -88,6 +88,26 @@
 
   const wizard = document.querySelector('[data-wizard]');
   if (wizard) {
+    const countrySelect = wizard.querySelector('[data-country-select]');
+    const countryName = wizard.querySelector('[data-country-name]');
+    const syncCountryName = () => {
+      if (!countrySelect || !countryName) return;
+      const option = countrySelect.selectedOptions?.[0];
+      const selectedName = option?.dataset.countryNameValue || '';
+      if (!selectedName) return;
+      const auto = countryName.dataset.autoCountryName === '1';
+      if (!countryName.value.trim() || auto) {
+        countryName.value = selectedName;
+        countryName.dataset.autoCountryName = '1';
+      }
+    };
+    if (countryName) {
+      countryName.addEventListener('input', () => {
+        countryName.dataset.autoCountryName = countryName.value.trim() ? '0' : '1';
+      });
+    }
+    if (countrySelect) countrySelect.addEventListener('change', syncCountryName);
+    syncCountryName();
     const panels = [...wizard.querySelectorAll('[data-wizard-panel]')];
     const steps = [...document.querySelectorAll('[data-wizard-step]')];
     let current = 0;
@@ -122,9 +142,11 @@
     const updateReview = () => {
       const get = (name) => wizard.querySelector(`[name="${name}"]`);
       const text = (name, fallback = 'خودکار') => get(name)?.value?.trim() || fallback;
+      const countryField = get('country_code');
+      const countryLabel = countryField?.selectedOptions?.[0]?.textContent?.trim() || '—';
       const rows = {
         '[data-review-name]': text('name', '—'),
-        '[data-review-country]': text('country_code', '—').toUpperCase(),
+        '[data-review-country]': countryLabel,
         '[data-review-inbound]': text('xui_inbound_port'),
         '[data-review-gateway]': text('gateway_port', '—'),
         '[data-review-state]': get('enabled')?.checked ? 'فعال' : 'غیرفعال',

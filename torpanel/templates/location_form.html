@@ -30,8 +30,16 @@
         <div class="form-section">
           <div class="form-section-title"><span class="form-section-number">01</span><div><h3>هویت لوکیشن</h3><p>نامی که در پنل می‌بینید و کشور خروجی Tor.</p></div></div>
           <div class="two">
-            <label class="field"><span>نام نمایشی</span><input name="name" value="{{ location.name if location else '' }}" placeholder="مثلاً Germany" autocomplete="off" required><small>یک نام کوتاه و قابل تشخیص انتخاب کنید.</small></label>
-            <label class="field"><span>کد دوحرفی کشور</span><input name="country_code" value="{{ location.country_code if location else '' }}" placeholder="DE" maxlength="2" pattern="[A-Za-z]{2}" autocomplete="off" required><small>ISO Alpha-2؛ مثل DE، NL، FR یا US.</small></label>
+            <label class="field"><span>نام نمایشی</span><input name="name" data-country-name data-auto-country-name="{{ '0' if location else '1' }}" value="{{ location.name if location else '' }}" placeholder="اختیاری؛ از نام کشور پر می‌شود" autocomplete="off"><small>اگر خالی بگذاری، نام کشور انتخاب‌شده خودکار استفاده می‌شود.</small></label>
+            <label class="field"><span>کشور خروجی Tor</span>
+              <select name="country_code" data-country-select required>
+                <option value="">انتخاب کشور…</option>
+                {% for country in tor_countries %}
+                <option value="{{ country.code }}" data-country-name-value="{{ country.name }}" {% if location and location.country_code == country.code %}selected{% endif %}>{{ country.flag }} {{ country.name }} ({{ country.code }})</option>
+                {% endfor %}
+              </select>
+              <small>فهرست کامل کشورها/قلمروهای ISO برای <code>ExitNodes</code>. وجود Exit فعال در هر کشور در هر لحظه تضمین نمی‌شود.</small>
+            </label>
           </div>
           <div class="callout info" style="margin-top:14px"><strong>Tor Exit Policy:</strong> این کشور با <code>ExitNodes</code> و <code>StrictNodes 1</code> اعمال می‌شود؛ اگر Exit مناسب موجود نباشد به کشور دیگری fallback نمی‌شود.</div>
         </div>

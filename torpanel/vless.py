@@ -92,6 +92,7 @@ def managed_subscription_id(location: dict[str, Any], decrypt_password) -> str:
 
 
 def _server_reality_settings(identity: RealityIdentity) -> dict[str, Any]:
+    """Raw Xray REALITY server settings used by the local Tor gateway."""
     return {
         "show": False,
         "dest": REALITY_DEST,
@@ -99,6 +100,28 @@ def _server_reality_settings(identity: RealityIdentity) -> dict[str, Any]:
         "serverNames": [REALITY_SERVER_NAME],
         "privateKey": identity.private_key,
         "shortIds": [identity.short_id],
+    }
+
+
+def _panel_server_reality_settings(identity: RealityIdentity) -> dict[str, Any]:
+    """3x-ui inbound wire shape including client-facing REALITY metadata."""
+    return {
+        "show": False,
+        "xver": 0,
+        "target": REALITY_DEST,
+        "serverNames": [REALITY_SERVER_NAME],
+        "privateKey": identity.private_key,
+        "minClientVer": "",
+        "maxClientVer": "",
+        "maxTimediff": 0,
+        "shortIds": [identity.short_id],
+        "settings": {
+            "publicKey": identity.public_key,
+            "fingerprint": "chrome",
+            "serverName": "",
+            "spiderX": "/",
+            "mldsa65Verify": "",
+        },
     }
 
 
@@ -198,11 +221,14 @@ def build_managed_vless_inbound(
                 "reset": 0,
             }],
             "decryption": "none",
+            "encryption": "none",
+            "fallbacks": [],
         },
         "streamSettings": {
             "network": "tcp",
+            "tcpSettings": {"header": {"type": "none"}},
             "security": "reality",
-            "realitySettings": _server_reality_settings(identity),
+            "realitySettings": _panel_server_reality_settings(identity),
         },
         "tag": tag,
         "sniffing": {

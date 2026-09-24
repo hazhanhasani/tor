@@ -65,3 +65,21 @@ def test_gateway_server_and_client_configs_share_reality_identity():
 def test_public_managed_inbound_uses_different_identity_from_gateway():
     loc = location()
     assert managed_inbound_reality_identity(loc, fake_decrypt) != gateway_reality_identity(loc, fake_decrypt)
+
+
+def test_managed_3xui_inbound_contains_share_link_reality_metadata():
+    from torpanel.vless import build_managed_vless_inbound
+
+    loc = {**location(), "xui_inbound_port": 21000}
+    inbound = build_managed_vless_inbound(loc, fake_decrypt, tag="torloc-in-de-test", port=21000)
+    identity = managed_inbound_reality_identity(loc, fake_decrypt)
+    assert inbound["settings"]["encryption"] == "none"
+    assert inbound["settings"]["clients"][0]["flow"] == REALITY_FLOW
+    assert inbound["streamSettings"]["tcpSettings"]["header"]["type"] == "none"
+    reality = inbound["streamSettings"]["realitySettings"]
+    assert reality["target"] == REALITY_DEST
+    assert reality["privateKey"] == identity.private_key
+    assert reality["shortIds"] == [identity.short_id]
+    assert reality["settings"]["publicKey"] == identity.public_key
+    assert reality["settings"]["fingerprint"] == "chrome"
+    assert reality["settings"]["spiderX"] == "/"

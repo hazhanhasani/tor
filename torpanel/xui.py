@@ -450,13 +450,21 @@ def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
         return False
     current_reality = _json_obj(current_stream.get("realitySettings"))
     expected_reality = expected_stream["realitySettings"]
-    for key in ("dest", "privateKey"):
-        if str(current_reality.get(key) or "") != str(expected_reality.get(key) or ""):
-            return False
+    current_target = str(current_reality.get("target") or current_reality.get("dest") or "")
+    expected_target = str(expected_reality.get("target") or expected_reality.get("dest") or "")
+    if current_target != expected_target:
+        return False
+    if str(current_reality.get("privateKey") or "") != str(expected_reality.get("privateKey") or ""):
+        return False
     if list(current_reality.get("serverNames") or []) != list(expected_reality["serverNames"]):
         return False
     if list(current_reality.get("shortIds") or []) != list(expected_reality["shortIds"]):
         return False
+    current_client_reality = _json_obj(current_reality.get("settings"))
+    expected_client_reality = expected_reality.get("settings") or {}
+    for key in ("publicKey", "fingerprint", "serverName", "spiderX"):
+        if str(current_client_reality.get(key) or "") != str(expected_client_reality.get(key) or ""):
+            return False
     return True
 
 

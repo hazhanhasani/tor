@@ -291,3 +291,18 @@ def test_connection_works_when_optional_status_endpoint_is_unavailable(monkeypat
     assert result["inbound_count"] == 1
     assert result["panel_version"] == ""
     assert result["xray_version"] == ""
+
+
+def test_reconcile_match_rejects_reality_without_3xui_public_metadata():
+    loc = {
+        "id": 1, "slug": "de-test", "name": "Germany", "country_code": "DE",
+        "xui_inbound_port": 21000, "ss_password": "enc",
+    }
+    expected = managed_inbound_payload(loc, fake_decrypt)
+    broken_reality = dict(expected["streamSettings"]["realitySettings"])
+    broken_reality.pop("settings", None)
+    broken = {
+        **expected,
+        "streamSettings": {**expected["streamSettings"], "realitySettings": broken_reality},
+    }
+    assert xui_module._inbound_matches(broken, expected) is False

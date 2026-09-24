@@ -338,3 +338,8 @@ Endpoint در دسترس نباشد، تست اتصال با API فهرست Inbo
 - [3x-ui v3.8.5](https://github.com/MHSanaei/3x-ui/releases/tag/v3.8.5)
 - [API رسمی Inbounds](https://docs.sanaei.dev/reference/api/inbounds)
 - [API رسمی Server](https://docs.sanaei.dev/reference/api/server)
+
+
+### REALITY share-link hotfix (v1.12.2)
+
+نسخه‌های 1.12.0 و 1.12.1 در Inbound مدیریت‌شده 3x-ui کلید عمومی REALITY را در محل مورد انتظار پنل ذخیره نمی‌کردند. در نتیجه لینک ساخته‌شده می‌توانست `pbk`، `fp` و `flow` لازم را نداشته باشد و اتصال Locationهای Legacy شکست بخورد. از v1.12.2 ساختار Inbound با wire schema رسمی 3x-ui v3.8.5 هماهنگ است و Sync بعدی Inboundهای قبلی را نیز تعمیر می‌کند.

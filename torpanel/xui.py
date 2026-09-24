@@ -410,6 +410,18 @@ def managed_outbound_tag(location: dict[str, Any]) -> str:
     return MANAGED_PREFIX + str(location["slug"])
 
 
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
 def managed_inbound_payload(location: dict[str, Any], decrypt_password) -> dict[str, Any]:
     port = int(location.get("xui_inbound_port") or 0)
     if not port:

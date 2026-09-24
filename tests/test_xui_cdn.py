@@ -375,3 +375,97 @@ def test_reconcile_retries_when_port_becomes_busy_during_add(monkeypatch):
     assert saved["xui_cdn_port"] == "443"
     assert any(row["id"] == 45 and row["port"] == 443 for row in client.rows)
 
+
+def test_sanaei_385_retries_multiple_hidden_awg_relay_conflicts(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(xui_cdn, "set_setting", lambda k, v: saved.__setitem__(k, v))
+
+    class FakeClient:
+        settings = cdn_settings()
+        def __init__(self):
+            self.rows = []
+            self.ports = []
+        def list_inbounds(self):
+            return list(self.rows)
+        def get_web_cert_files(self):
+            return {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+        def add_inbound(self, payload):
+            port = payload["port"]
+            self.ports.append(port)
+            if len(self.ports) < 3:
+                raise RuntimeError(
+                    f"port {port} (TCP) already forwarded on inbound AWG by its client"
+                )
+            self.rows.append({
+                "id": 40, "tag": "in-2083-tcp",
+                "remark": xui_cdn.CDN_MANAGED_REMARK, "port": port,
+            })
+
+    client = FakeClient()
+    result = reconcile_cdn_inbound(client, [location()], fake_decrypt)
+    assert client.ports == [8443, 443, 2083]
+    assert result["created"] == 1
+    assert result["cdn_port"] == 2083
+    assert result["cdn_inbound_tag"] == "in-2083-tcp"
+    assert saved["xui_cdn_port"] == "2083"
+
+
+def test_sanaei_385_failed_create_keeps_legacy_inbound_and_port(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(xui_cdn, "set_setting", lambda k, v: saved.__setitem__(k, v))
+
+    class FakeClient:
+        settings = cdn_settings()
+        def __init__(self):
+            self.deleted = []
+            self.ports = []
+        def list_inbounds(self):
+            return [{"id": 6, "tag": "torloc-in-de-123",
+                     "remark": "Existing legacy", "port": 22001}]
+        def get_web_cert_files(self):
+            return {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+        def add_inbound(self, payload):
+            self.ports.append(payload["port"])
+            raise RuntimeError(f"port {payload['port']} already forwarded on AWG")
+        def delete_inbound(self, inbound_id):
+            self.deleted.append(inbound_id)
+
+    client = FakeClient()
+    with pytest.raises(CDNProfileError, match="پورت"):
+        reconcile_cdn_inbound(client, [location()], fake_decrypt)
+    assert client.deleted == []
+    assert client.settings.cdn_port == 8443
+    assert saved == {}
+    assert len(set(client.ports)) == 5  # 2053 is reserved for the panel itself.
+
+
+def test_sanaei_385_removes_legacy_only_after_successful_cdn_create(monkeypatch):
+    monkeypatch.setattr(xui_cdn, "set_setting", lambda k, v: None)
+
+    class FakeClient:
+        settings = cdn_settings()
+        def __init__(self):
+            self.rows = [
+                {"id": 7, "tag": "torloc-in-de-123", "port": 22001},
+            ]
+            self.events = []
+        def list_inbounds(self):
+            return list(self.rows)
+        def get_web_cert_files(self):
+            return {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+        def add_inbound(self, payload):
+            self.events.append("create")
+            self.rows.append({
+                "id": 8, "tag": payload["tag"],
+                "remark": payload["remark"], "port": payload["port"],
+            })
+        def delete_inbound(self, inbound_id):
+            self.events.append("delete")
+            self.rows = [row for row in self.rows if row["id"] != inbound_id]
+
+    client = FakeClient()
+    result = reconcile_cdn_inbound(client, [location()], fake_decrypt)
+    assert result["created"] == 1
+    assert result["removed"] == 1
+    assert client.events == ["create", "delete"]
+    assert [row["id"] for row in client.rows] == [8]

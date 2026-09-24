@@ -339,9 +339,10 @@ def _pick_free_cdn_port(
     settings: Any,
     preferred: int,
     ignore_ids: set[int] | None = None,
+    blocked_ports: set[int] | None = None,
 ) -> int:
     ignored = ignore_ids or set()
-    used: set[int] = set()
+    used: set[int] = set(blocked_ports or ())
     for row in options:
         if _row_id(row) in ignored:
             continue
@@ -374,10 +375,14 @@ def _is_port_conflict_error(exc: Exception) -> bool:
 
 
 def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
+    """Reconcile CDN safely with 3x-ui 3.8.5 port/relay conflict validation.
+
+    Do not remove working legacy inbounds until the shared CDN inbound exists.
+    Port conflicts can come from AWG relays or forwarded peers that the inbound
+    options API cannot list, so retry every eligible Cloudflare port.
+    """
     options = client.list_inbounds()
     enabled = [loc for loc in locations if loc.get("enabled")]
-    removed = 0
-
     desired_port = normalize_cdn_port(client.settings.cdn_port)
     managed_rows = [row for row in options if _is_managed_cdn_row(row)]
     existing = next(
@@ -392,145 +397,101 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
         existing_port = int(existing.get("port") or 0)
         if existing_port in CLOUDFLARE_HTTPS_PORTS:
             desired_port = existing_port
-            client.settings.cdn_port = existing_port
-            set_setting("xui_cdn_port", str(existing_port))
-
-    existing_id = _row_id(existing) if existing else None
-    conflicts = [
-        row for row in options
-        if int(row.get("port") or 0) == desired_port
-        and (existing_id is None or _row_id(row) != existing_id)
-    ]
-    if conflicts:
-        ignored = {existing_id} if existing_id is not None else set()
-        chosen = _pick_free_cdn_port(
-            options, client.settings, desired_port, ignore_ids=ignored
-        )
-        if chosen != desired_port:
-            desired_port = chosen
-            client.settings.cdn_port = chosen
-            set_setting("xui_cdn_port", str(chosen))
-
-    # Cloudflare mode replaces the old per-location SS2022 public inbounds.
-    for row in list(options):
-        tag = str(row.get("tag") or "")
-        if tag.startswith(LEGACY_MANAGED_PREFIX) or (_is_managed_cdn_row(row) and not enabled):
-            if row.get("id") is not None:
-                client.delete_inbound(int(row["id"]))
-                removed += 1
 
     if not enabled:
+        removed = 0
+        for row in options:
+            tag = str(row.get("tag") or "")
+            if (tag.startswith(LEGACY_MANAGED_PREFIX) or _is_managed_cdn_row(row)) and row.get("id") is not None:
+                client.delete_inbound(int(row["id"]))
+                removed += 1
         return {
-            "created": 0,
-            "updated": 0,
-            "removed": removed,
-            "cdn_clients": 0,
-            "cdn_inbound_tag": "",
-            "cdn_port": desired_port,
+            "created": 0, "updated": 0, "removed": removed,
+            "cdn_clients": 0, "cdn_inbound_tag": "", "cdn_port": desired_port,
         }
 
-    if removed:
-        options = client.list_inbounds()
-        managed_rows = [row for row in options if _is_managed_cdn_row(row)]
-        existing = next(
-            (row for row in managed_rows if int(row.get("port") or 0) == desired_port),
-            None,
-        )
-
-    client.settings.cdn_port = desired_port
+    existing_id = _row_id(existing) if existing else None
+    if existing is not None and existing_id is None:
+        raise CDNProfileError("Inbound مدیریت‌شده CDN شناسه معتبر ندارد؛ حذف خودکار انجام نشد.")
+    existing_tag = str((existing or {}).get("tag") or CDN_MANAGED_TAG)
+    original_port = client.settings.cdn_port
     cert_files = client.get_web_cert_files()
-    expected = build_cdn_inbound_payload(enabled, client.settings, cert_files, decrypt_password)
+    blocked_ports: set[int] = set()
+    ignored_ids = {existing_id} if existing_id is not None else set()
+    current = client.get_inbound(existing_id) if existing_id is not None else None
 
-    if existing is None:
-        try:
-            client.add_inbound(expected)
-        except Exception as exc:
-            if not _is_port_conflict_error(exc):
-                raise
-            refreshed_after_conflict = client.list_inbounds()
-            chosen = _pick_free_cdn_port(
-                refreshed_after_conflict, client.settings, desired_port
+    try:
+        while True:
+            candidate = _pick_free_cdn_port(
+                options, client.settings, desired_port,
+                ignore_ids=ignored_ids, blocked_ports=blocked_ports,
             )
-            if chosen == desired_port:
-                raise
-            desired_port = chosen
-            client.settings.cdn_port = chosen
-            set_setting("xui_cdn_port", str(chosen))
+            client.settings.cdn_port = candidate
             expected = build_cdn_inbound_payload(
                 enabled, client.settings, cert_files, decrypt_password
             )
-            client.add_inbound(expected)
+            if existing is not None:
+                expected["tag"] = existing_tag
 
-        refreshed = client.list_inbounds()
-        created_row = next(
-            (
-                row for row in refreshed
-                if _is_managed_cdn_row(row)
-                and int(row.get("port") or 0) == desired_port
-            ),
-            None,
-        )
-        actual_tag = str((created_row or {}).get("tag") or CDN_MANAGED_TAG)
-        return {
-            "created": 1,
-            "updated": 0,
-            "removed": removed,
-            "cdn_clients": len(enabled),
-            "cdn_inbound_tag": actual_tag,
-            "cdn_port": desired_port,
-        }
+            if current is not None and cdn_inbound_matches(current, expected):
+                created = updated = 0
+                actual_tag = existing_tag
+                break
 
-    actual_tag = str(existing.get("tag") or CDN_MANAGED_TAG)
-    expected["tag"] = actual_tag
-    if existing.get("id") is None:
-        return {
-            "created": 0,
-            "updated": 0,
-            "removed": removed,
-            "cdn_clients": len(enabled),
-            "cdn_inbound_tag": actual_tag,
-            "cdn_port": desired_port,
-        }
+            try:
+                if existing_id is None:
+                    client.add_inbound(expected)
+                else:
+                    client.update_inbound(existing_id, expected)
+            except Exception as exc:
+                if not _is_port_conflict_error(exc):
+                    raise
+                # Current 3x-ui also reserves ports forwarded by AmneziaWG
+                # peers. Those are not represented by /inbounds/options.
+                blocked_ports.add(candidate)
+                options = client.list_inbounds()
+                continue
 
-    current = client.get_inbound(int(existing["id"]))
-    if not cdn_inbound_matches(current, expected):
-        try:
-            client.update_inbound(int(existing["id"]), expected)
-        except Exception as exc:
-            if not _is_port_conflict_error(exc):
-                raise
-            refreshed_after_conflict = client.list_inbounds()
-            chosen = _pick_free_cdn_port(
-                refreshed_after_conflict,
-                client.settings,
-                desired_port,
-                ignore_ids={int(existing["id"])},
-            )
-            if chosen == desired_port:
-                raise
-            desired_port = chosen
-            client.settings.cdn_port = chosen
-            set_setting("xui_cdn_port", str(chosen))
-            expected = build_cdn_inbound_payload(
-                enabled, client.settings, cert_files, decrypt_password
-            )
-            expected["tag"] = actual_tag
-            client.update_inbound(int(existing["id"]), expected)
-        return {
-            "created": 0,
-            "updated": 1,
-            "removed": removed,
-            "cdn_clients": len(enabled),
-            "cdn_inbound_tag": actual_tag,
-            "cdn_port": desired_port,
-        }
+            created = 1 if existing_id is None else 0
+            updated = 0 if existing_id is None else 1
+            if created:
+                refreshed = client.list_inbounds()
+                created_row = next(
+                    (row for row in refreshed if _is_managed_cdn_row(row)
+                     and int(row.get("port") or 0) == candidate),
+                    None,
+                )
+                if created_row is None:
+                    raise CDNProfileError(
+                        "3x-ui ایجاد Inbound CDN را پذیرفت اما ورودی جدید در فهرست یافت نشد؛ "
+                        "ورودی‌های قدیمی برای جلوگیری از قطعی حفظ شدند."
+                    )
+                actual_tag = str(created_row.get("tag") or CDN_MANAGED_TAG)
+                existing_id = _row_id(created_row)
+            else:
+                actual_tag = existing_tag
+            break
+    except Exception:
+        client.settings.cdn_port = original_port
+        raise
+
+    # Persist the selected port only after a successful add/update. If creation
+    # failed, older per-location routes and stored settings are untouched.
+    if client.settings.cdn_port != original_port:
+        set_setting("xui_cdn_port", str(client.settings.cdn_port))
+
+    removed = 0
+    for row in client.list_inbounds():
+        tag = str(row.get("tag") or "")
+        redundant_cdn = _is_managed_cdn_row(row) and _row_id(row) != existing_id
+        if (tag.startswith(LEGACY_MANAGED_PREFIX) or redundant_cdn) and row.get("id") is not None:
+            client.delete_inbound(int(row["id"]))
+            removed += 1
+
     return {
-        "created": 0,
-        "updated": 0,
-        "removed": removed,
-        "cdn_clients": len(enabled),
-        "cdn_inbound_tag": actual_tag,
-        "cdn_port": desired_port,
+        "created": created, "updated": updated, "removed": removed,
+        "cdn_clients": len(enabled), "cdn_inbound_tag": actual_tag,
+        "cdn_port": client.settings.cdn_port,
     }
 
 

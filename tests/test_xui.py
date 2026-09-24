@@ -244,3 +244,45 @@ def test_ensure_warp_outbound_repairs_stale_native_outbound(monkeypatch):
 
 def test_sync_runtime_has_set_setting_dependency():
     assert callable(xui_module.set_setting)
+
+def test_connection_reports_sanaei_panel_and_xray_versions(monkeypatch):
+    client = XUIClient(XUISettings(
+        base_url="https://panel.example.com/",
+        api_token="token",
+        gateway_host="127.0.0.1",
+        verify_tls=True,
+    ))
+
+    def fake_request(method, path, **kwargs):
+        if path == "/panel/api/inbounds/options":
+            return {"success": True, "obj": [{"id": 1, "tag": "in-1", "port": 443}]}
+        if path == "/panel/api/server/status":
+            return {"success": True, "obj": {
+                "panelVersion": "3.8.5",
+                "xray": {"version": "26.9.9", "state": 1},
+            }}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    result = client.test_connection()
+    assert result["inbound_count"] == 1
+    assert result["panel_version"] == "3.8.5"
+    assert result["xray_version"] == "26.9.9"
+
+
+def test_connection_works_when_optional_status_endpoint_is_unavailable(monkeypatch):
+    client = XUIClient(XUISettings(
+        base_url="https://panel.example.com/", api_token="token",
+        gateway_host="127.0.0.1", verify_tls=True,
+    ))
+
+    def fake_request(method, path, **kwargs):
+        if path == "/panel/api/inbounds/options":
+            return {"success": True, "obj": [{"id": 1, "tag": "in-1"}]}
+        raise xui_module.XUIError("Endpoint API پیدا نشد (HTTP 404)")
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    result = client.test_connection()
+    assert result["inbound_count"] == 1
+    assert result["panel_version"] == ""
+    assert result["xray_version"] == ""

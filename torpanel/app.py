@@ -623,7 +623,13 @@ def make_app() -> Flask:
             if cfg.managed_inbound_mode == "cloudflare":
                 certs = client.get_web_cert_files()
                 suffix = f" Certificate پنل شناسایی شد: {certs['webCertFile']}."
-            flash(f"اتصال موفق بود؛ {result['inbound_count']} ورودی در 3x-ui پیدا شد.{suffix}", "success")
+            version_bits = []
+            if result.get("panel_version"):
+                version_bits.append(f"3x-ui v{result['panel_version']}")
+            if result.get("xray_version"):
+                version_bits.append(f"Xray {result['xray_version']}")
+            versions = f"؛ {' · '.join(version_bits)}" if version_bits else ""
+            flash(f"اتصال موفق بود؛ {result['inbound_count']} ورودی در 3x-ui پیدا شد{versions}.{suffix}", "success")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("settings"))

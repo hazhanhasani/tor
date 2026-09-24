@@ -79,7 +79,7 @@ class XUIClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Authorization": f"Bearer {self.settings.api_token}",
-            "User-Agent": "TorLocationManager/1.2",
+            "User-Agent": "TorLocationManager/1.11",
         })
 
     def _url(self, path: str) -> str:
@@ -376,11 +376,31 @@ class XUIClient:
             )
         return {"webCertFile": cert_file, "webKeyFile": key_file}
 
+    def get_server_status(self) -> dict[str, Any]:
+        """Read the official 3x-ui status endpoint (v3.8.5 compatible)."""
+        status = self._unwrap(self._request("GET", "/panel/api/server/status"))
+        if not isinstance(status, dict):
+            raise XUIError("پاسخ وضعیت 3x-ui ساختار مورد انتظار را ندارد.")
+        return status
+
     def test_connection(self) -> dict[str, Any]:
         if not self.settings.api_token:
             raise XUIError("API Token خالی است.")
         inbounds = self.list_inbounds()
-        return {"inbound_count": len(inbounds), "inbounds": inbounds}
+        # Status is supplementary: older panels may lack this endpoint, but a
+        # working inbound API must still pass the connection check.
+        try:
+            status = self.get_server_status()
+        except XUIError:
+            status = {}
+        xray = status.get("xray") if isinstance(status.get("xray"), dict) else {}
+        return {
+            "inbound_count": len(inbounds),
+            "inbounds": inbounds,
+            "panel_version": str(status.get("panelVersion") or ""),
+            "xray_version": str(xray.get("version") or ""),
+            "xray_state": xray.get("state"),
+        }
 
 
 def managed_inbound_tag(location: dict[str, Any]) -> str:

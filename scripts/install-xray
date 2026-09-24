@@ -122,5 +122,10 @@ mkdir -p /usr/local/share/xray
 [[ -f "$TMP/xray/geoip.dat" ]] && install -m 0644 "$TMP/xray/geoip.dat" /usr/local/share/xray/geoip.dat
 [[ -f "$TMP/xray/geosite.dat" ]] && install -m 0644 "$TMP/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 
-/usr/local/bin/xray version | head -n 1
+# Capture the complete output before printing the first line. With pipefail enabled,
+# piping xray to head may trigger SIGPIPE (exit 141) after a successful install.
+XRAY_VERSION_OUTPUT="$(/usr/local/bin/xray version)"
+printf '%s\n' "${XRAY_VERSION_OUTPUT%%
+echo "Xray installation completed."
+\n'*}"
 echo "Xray installation completed."

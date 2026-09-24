@@ -5,6 +5,7 @@ import pytest
 import torpanel.xui_cdn as xui_cdn
 from torpanel.xui import XUISettings, build_synced_config
 from torpanel.xui_cdn import (
+    CDN_MANAGED_REMARK,
     CDN_MANAGED_TAG,
     CDNProfileError,
     build_cdn_inbound_payload,

@@ -125,7 +125,5 @@ mkdir -p /usr/local/share/xray
 # Capture the complete output before printing the first line. With pipefail enabled,
 # piping xray to head may trigger SIGPIPE (exit 141) after a successful install.
 XRAY_VERSION_OUTPUT="$(/usr/local/bin/xray version)"
-printf '%s\n' "${XRAY_VERSION_OUTPUT%%
-echo "Xray installation completed."
-\n'*}"
+printf '%s\n' "${XRAY_VERSION_OUTPUT%%$'\n'*}"
 echo "Xray installation completed."

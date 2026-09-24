@@ -87,10 +87,14 @@ def sync_xui_hybrid() -> dict[str, int]:
     settings = xui_settings()
     client = XUIClient(settings)
     links = list_tunnel_links()
-    config = build_xui_hybrid_config(client.get_xray_config(), links)
-    client.update_xray_config(config)
+    original = client.get_xray_config()
+    config = build_xui_hybrid_config(original, links)
+    changed = config != original
+    if changed:
+        client.update_xray_config(config)
     return {
         "tunnel_routes": sum(1 for link in links if tunnel_panel_tags(str(link.get("uuid") or ""), "xui")),
+        "tunnel_xray_updated": 1 if changed else 0,
     }
 
 

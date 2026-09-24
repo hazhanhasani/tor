@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import json
@@ -219,6 +220,37 @@ def _obj(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _is_managed_location_client(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    email = str(row.get("email") or "").strip().lower()
+    return email.startswith("torloc.") and email.endswith("@managed.invalid")
+
+
+def merge_preserved_cdn_clients(
+    current: dict[str, Any],
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep operator-created clients while reconciling only TLM clients."""
+    merged = copy.deepcopy(expected)
+    current_settings = _obj(current.get("settings"))
+    foreign_clients = [
+        copy.deepcopy(row)
+        for row in (current_settings.get("clients") or [])
+        if isinstance(row, dict) and not _is_managed_location_client(row)
+    ]
+    managed_clients = [
+        copy.deepcopy(row)
+        for row in (expected.get("settings", {}).get("clients") or [])
+        if isinstance(row, dict)
+    ]
+    merged["settings"]["clients"] = foreign_clients + managed_clients
+    for key in ("shareAddrStrategy", "shareAddr", "subSortIndex"):
+        if key in current:
+            merged[key] = copy.deepcopy(current[key])
+    return merged
+
+
 def _client_projection(row: Any) -> tuple[str, str, bool, str, int, str]:
     if not isinstance(row, dict):
         return ("", "", False, "", 0, "")
@@ -432,6 +464,8 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
             )
             if existing is not None:
                 expected["tag"] = existing_tag
+            if current is not None:
+                expected = merge_preserved_cdn_clients(current, expected)
 
             if current is not None and cdn_inbound_matches(current, expected):
                 created = updated = 0

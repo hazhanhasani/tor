@@ -343,3 +343,16 @@ Endpoint در دسترس نباشد، تست اتصال با API فهرست Inbo
 ### REALITY share-link hotfix (v1.12.2)
 
 نسخه‌های 1.12.0 و 1.12.1 در Inbound مدیریت‌شده 3x-ui کلید عمومی REALITY را در محل مورد انتظار پنل ذخیره نمی‌کردند. در نتیجه لینک ساخته‌شده می‌توانست `pbk`، `fp` و `flow` لازم را نداشته باشد و اتصال Locationهای Legacy شکست بخورد. از v1.12.2 ساختار Inbound با wire schema رسمی 3x-ui v3.8.5 هماهنگ است و Sync بعدی Inboundهای قبلی را نیز تعمیر می‌کند.
+
+
+### Safe Reconcile / background Sync (v1.12.4)
+
+در 3x-ui جدید، `settings.clients` هنگام Update یک Inbound «کل وضعیت مطلوب» محسوب
+می‌شود؛ بنابراین ارسال Payload تک‌کاربره می‌تواند Clientهای قبلی را detach کند.
+از v1.12.4، Reconcile کلاینت‌های واقعی موجود را حفظ می‌کند، فقط transport/REALITY
+و flow لازم را repair می‌کند و bootstrap client پروژه را وقتی Client واقعی وجود
+دارد کنار می‌گذارد. در حالت CDN نیز Clientهای ساخته‌شده توسط اپراتور حذف نمی‌شوند.
+
+دکمه «بازسازی و Sync» دیگر عملیات سنگین را داخل request وب اجرا نمی‌کند. Job در
+پس‌زمینه اجرا می‌شود و UI وضعیت آن را poll می‌کند. همچنین Xray config فقط وقتی
+واقعاً تغییر کرده باشد به 3x-ui ارسال می‌شود تا restart/reload بی‌دلیل حذف شود.

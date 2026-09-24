@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 from functools import wraps
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
 from .countries import TOR_COUNTRIES, TOR_COUNTRY_BY_CODE
@@ -54,6 +54,7 @@ from .routing_state import (
 )
 from .runtime import apply_panel_tls, apply_runtime, journal_tail, service_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
+from .sync_job import launch_sync_job, sync_job_state
 from .tunnel_routes import bp as tunnel_bp
 from .update import cached_update_available, current_version, latest_release, trigger_update, update_log_tail, update_state
 from .xui import XUIClient, XUIError, current_settings as xui_current_settings, normalize_api_token
@@ -227,6 +228,7 @@ def make_app() -> Flask:
             xui_managed_inbound_mode=xui_cfg.managed_inbound_mode,
             xui_cdn_domain=xui_cfg.cdn_domain,
             xui_cdn_port=xui_cfg.cdn_port,
+            sync_state=sync_job_state(),
         )
 
     @app.route("/settings", methods=["GET", "POST"])
@@ -984,16 +986,25 @@ def make_app() -> Flask:
             flash(str(exc), "danger")
         return redirect(url_for("index"))
 
+    @app.get("/sync/status")
+    @login_required
+    def sync_status():
+        return jsonify(sync_job_state())
+
     @app.post("/sync")
     @login_required
     def sync():
         validate_csrf(request.form.get("_csrf"))
         try:
-            apply_runtime()
-            results = sync_all_panels(list_locations(), decrypt_secret)
-            flash_sync_results(results, "Tor، Tunnel و پنل‌ها Reconcile شدند.")
+            if launch_sync_job():
+                flash(
+                    "بازسازی و Sync در پس‌زمینه شروع شد؛ پنل هنگام انجام کار در دسترس می‌ماند.",
+                    "success",
+                )
+            else:
+                flash("یک عملیات Sync در حال اجراست؛ عملیات تکراری شروع نشد.", "warning")
         except Exception as exc:
-            flash(str(exc), "danger")
+            flash(f"شروع Sync ناموفق بود: {exc}", "danger")
         return redirect(url_for("index"))
 
     return app

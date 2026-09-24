@@ -306,3 +306,129 @@ def test_reconcile_match_rejects_reality_without_3xui_public_metadata():
         "streamSettings": {**expected["streamSettings"], "realitySettings": broken_reality},
     }
     assert xui_module._inbound_matches(broken, expected) is False
+
+
+
+def test_repair_existing_managed_payload_preserves_real_clients_and_removes_bootstrap():
+    loc = {
+        "id": 1,
+        "slug": "fi-test",
+        "name": "Finland",
+        "country_code": "FI",
+        "xui_inbound_port": 21001,
+        "ss_password": "enc",
+    }
+    expected = managed_inbound_payload(loc, fake_decrypt)
+    bootstrap = expected["settings"]["clients"][0]
+    current = {
+        **expected,
+        "shareAddrStrategy": "custom",
+        "shareAddr": "edge.example.com",
+        "settings": {
+            **expected["settings"],
+            "clients": [
+                {
+                    "id": "11111111-2222-4333-8444-555555555555",
+                    "email": "alice@example.com",
+                    "flow": "",
+                    "enable": True,
+                    "subId": "keep-me",
+                    "totalGB": 123,
+                },
+                bootstrap,
+            ],
+        },
+    }
+
+    repaired = xui_module._repair_existing_managed_payload(current, expected)
+    clients = repaired["settings"]["clients"]
+    assert [row["email"] for row in clients] == ["alice@example.com"]
+    assert clients[0]["id"] == "11111111-2222-4333-8444-555555555555"
+    assert clients[0]["subId"] == "keep-me"
+    assert clients[0]["totalGB"] == 123
+    assert clients[0]["flow"] == "xtls-rprx-vision"
+    assert repaired["shareAddrStrategy"] == "custom"
+    assert repaired["shareAddr"] == "edge.example.com"
+
+
+def test_reconcile_managed_inbound_does_not_delete_existing_users(monkeypatch):
+    loc = {
+        "id": 7,
+        "slug": "fr-test",
+        "name": "France",
+        "country_code": "FR",
+        "enabled": True,
+        "gateway_port": 31001,
+        "socks_port": 19050,
+        "xui_inbound_port": 21000,
+        "ss_password": "enc",
+        "inbound_tags": [],
+    }
+    expected = managed_inbound_payload(loc, fake_decrypt)
+    current = {
+        **expected,
+        "settings": {
+            **expected["settings"],
+            "clients": [{
+                "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "email": "real-user@example.com",
+                "flow": "",
+                "enable": True,
+                "subId": "existing-sub",
+            }],
+        },
+    }
+
+    class FakeClient:
+        settings = XUISettings(
+            base_url="https://panel.example.com/",
+            api_token="token",
+            gateway_host="203.0.113.5",
+            verify_tls=True,
+            managed_inbound_mode="legacy",
+        )
+
+        def __init__(self):
+            self.updated = None
+
+        def list_inbounds(self):
+            return [{"id": 9, "tag": "torloc-in-fr-test", "port": 21000, "protocol": "vless"}]
+
+        def get_inbound(self, inbound_id):
+            return current
+
+        def update_inbound(self, inbound_id, payload):
+            self.updated = payload
+            return {}
+
+        def delete_inbound(self, inbound_id):
+            raise AssertionError("must not delete managed inbound")
+
+    monkeypatch.setattr(xui_module, "set_location_xui_inbound_port", lambda *_: None)
+    client = FakeClient()
+    result = xui_module.reconcile_managed_inbounds(client, [loc], fake_decrypt)
+    assert result["updated"] == 1
+    assert client.updated is not None
+    assert [c["email"] for c in client.updated["settings"]["clients"]] == ["real-user@example.com"]
+    assert client.updated["settings"]["clients"][0]["flow"] == "xtls-rprx-vision"
+
+
+def test_build_synced_config_is_idempotent_for_noop_sync():
+    locations = [{
+        "slug": "de-stable",
+        "name": "Germany",
+        "country_code": "DE",
+        "enabled": True,
+        "gateway_port": 31001,
+        "socks_port": 19050,
+        "xui_inbound_port": 21000,
+        "ss_password": "enc",
+        "inbound_tags": [],
+    }]
+    original = {
+        "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}],
+        "routing": {"rules": []},
+    }
+    first = build_synced_config(original, locations, "203.0.113.5", fake_decrypt)
+    second = build_synced_config(first, locations, "203.0.113.5", fake_decrypt)
+    assert second == first

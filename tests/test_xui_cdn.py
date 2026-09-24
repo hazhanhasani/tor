@@ -469,3 +469,65 @@ def test_sanaei_385_removes_legacy_only_after_successful_cdn_create(monkeypatch)
     assert result["removed"] == 1
     assert client.events == ["create", "delete"]
     assert [row["id"] for row in client.rows] == [8]
+
+
+
+def test_cdn_reconcile_preserves_operator_clients(monkeypatch):
+    loc = location()
+    settings = cdn_settings()
+    certs = {"webCertFile": "/etc/x-ui/cert.pem", "webKeyFile": "/etc/x-ui/key.pem"}
+    base = build_cdn_inbound_payload([loc], settings, certs, fake_decrypt)
+    current = {
+        **base,
+        "id": 55,
+        "settings": {
+            **base["settings"],
+            "clients": [
+                {
+                    "id": "11111111-2222-4333-8444-555555555555",
+                    "email": "operator@example.com",
+                    "flow": "",
+                    "limitIp": 2,
+                    "totalGB": 999,
+                    "expiryTime": 0,
+                    "enable": True,
+                    "tgId": 0,
+                    "subId": "operator-sub",
+                    "comment": "keep",
+                    "reset": 0,
+                },
+                *base["settings"]["clients"],
+            ],
+        },
+    }
+
+    class FakeClient:
+        def __init__(self):
+            self.settings = settings
+            self.updated = None
+
+        def list_inbounds(self):
+            return [{"id": 55, "tag": CDN_MANAGED_TAG, "remark": CDN_MANAGED_REMARK, "port": settings.cdn_port}]
+
+        def get_web_cert_files(self):
+            return certs
+
+        def get_inbound(self, inbound_id):
+            return current
+
+        def update_inbound(self, inbound_id, payload):
+            self.updated = payload
+            return {}
+
+    client = FakeClient()
+    result = reconcile_cdn_inbound(client, [loc], fake_decrypt)
+    assert result["updated"] == 0
+    assert client.updated is None
+
+    # Force a transport change; the update payload must still retain the operator client.
+    current["streamSettings"]["wsSettings"]["heartbeatPeriod"] = 5
+    result = reconcile_cdn_inbound(client, [loc], fake_decrypt)
+    assert result["updated"] == 1
+    emails = [row["email"] for row in client.updated["settings"]["clients"]]
+    assert "operator@example.com" in emails
+    assert managed_client_email(loc) in emails

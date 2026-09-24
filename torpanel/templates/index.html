@@ -5,13 +5,23 @@
 <section class="page-head">
   <div><div class="eyebrow">MULTI COUNTRY EGRESS</div><h1>لوکیشن‌ها</h1><p>هر لوکیشن یک Tor مستقل، Gateway رمزنگاری‌شده و Route خودکار دارد؛ در حالت Cloudflare، همه Locationها از یک Inbound مشترک TLS/WebSocket با Client اختصاصی استفاده می‌کنند.</p></div>
   <div class="page-actions">
-    <form method="post" action="{{ url_for('sync') }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} بازسازی و Sync</button></form>
+    <form method="post" action="{{ url_for('sync') }}" data-sync-launch><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="button" type="submit">{{ icon('sync') }} بازسازی و Sync</button></form>
     <a class="button primary" href="{{ url_for('location_new') }}">{{ icon('plus') }} افزودن لوکیشن</a>
   </div>
 </section>
 
 {% if not configured %}
 <div class="status-banner warning" style="margin-bottom:16px"><div class="status-icon">{{ icon('link') }}</div><div><strong>اتصال 3x-ui کامل نشده است</strong><p>ابتدا URL پنل، API Token و آدرس Gateway را در بخش «اتصال و شبکه» ذخیره کنید.</p><a class="button small" style="margin-top:9px" href="{{ url_for('settings') }}">رفتن به تنظیمات</a></div></div>
+{% endif %}
+
+{% if sync_state.status in ['queued', 'running', 'success', 'partial', 'failed'] %}
+<div class="status-banner {{ 'success' if sync_state.status == 'success' else ('danger' if sync_state.status == 'failed' else 'warning') }}" style="margin-bottom:16px" data-sync-status data-sync-active="{{ '1' if sync_state.status in ['queued', 'running'] else '0' }}">
+  <div class="status-icon">{{ icon('sync') }}</div>
+  <div>
+    <strong>{{ 'Sync در حال اجراست' if sync_state.status in ['queued', 'running'] else ('Sync کامل شد' if sync_state.status == 'success' else 'نتیجه Sync') }}</strong>
+    <p>{{ sync_state.message or 'در حال بازسازی Tor و همگام‌سازی پنل‌ها…' }}</p>
+  </div>
+</div>
 {% endif %}
 
 <div class="stats-grid">
@@ -45,7 +55,7 @@
       {% else %}
       <div class="route-node"><b>3x-ui Inbound</b><span>{{ loc.xui_inbound_port or 'Auto' }}</span></div><span class="route-arrow">→</span>
       {% endif %}
-      <div class="route-node"><b>SS2022 Gateway</b><span>{{ loc.gateway_port }}</span></div><span class="route-arrow">→</span>
+      <div class="route-node"><b>VLESS + REALITY Gateway</b><span>{{ loc.gateway_port }}</span></div><span class="route-arrow">→</span>
       <div class="route-node"><b>Tor Exit {{ loc.country_code }}</b><span>SOCKS {{ loc.socks_port }}</span></div>
     </div>
 

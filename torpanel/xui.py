@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 
 from .db import get_setting, set_location_xui_inbound_port, set_setting
 from .security import decrypt_secret
-from .vless import build_gateway_vless_outbound, build_managed_vless_inbound
+from .vless import REALITY_FLOW, build_gateway_vless_outbound, build_managed_vless_inbound
 from .warp import xray_domain_rules
 from .xui_cdn import (
     CDN_MANAGED_TAG,
@@ -431,6 +431,63 @@ def managed_inbound_payload(location: dict[str, Any], decrypt_password) -> dict[
     )
 
 
+def _is_tlm_generated_client(row: Any) -> bool:
+    if not isinstance(row, dict):
+        return False
+    email = str(row.get("email") or "").strip().lower()
+    return email.startswith("torloc.") and email.endswith("@managed.invalid")
+
+
+def _repair_existing_managed_payload(
+    current: dict[str, Any],
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch transport/security without replacing real 3x-ui clients.
+
+    Sanaei 3x-ui SyncInbound treats settings.clients as the complete desired
+    client set. Sending the generated one-client payload therefore detaches
+    every user that is not present in it. Keep user-managed clients, repair
+    their Reality/Vision flow, and remove only our synthetic bootstrap client
+    once real clients exist.
+    """
+    repaired = copy.deepcopy(expected)
+    current_settings = _json_obj(current.get("settings"))
+    current_clients = [
+        copy.deepcopy(row)
+        for row in (current_settings.get("clients") or [])
+        if isinstance(row, dict)
+    ]
+    real_clients: list[dict[str, Any]] = []
+    for row in current_clients:
+        if _is_tlm_generated_client(row):
+            continue
+        if row.get("id") and row.get("email"):
+            row["flow"] = REALITY_FLOW
+        real_clients.append(row)
+
+    if real_clients:
+        repaired["settings"]["clients"] = real_clients
+
+    # These are panel/subscription presentation fields, not Tor transport
+    # ownership. Preserve them when 3x-ui returns them so Sync does not reset
+    # an operator's sharing preferences.
+    for key in ("shareAddrStrategy", "shareAddr", "subSortIndex"):
+        if key in current:
+            repaired[key] = copy.deepcopy(current[key])
+    return repaired
+
+
+def _vless_client_projection(row: Any) -> tuple[str, str, str, bool]:
+    if not isinstance(row, dict):
+        return ("", "", "", False)
+    return (
+        str(row.get("email") or ""),
+        str(row.get("id") or ""),
+        str(row.get("flow") or ""),
+        bool(row.get("enable", True)),
+    )
+
+
 def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
     if int(current.get("port") or 0) != int(expected["port"]):
         return False
@@ -444,15 +501,22 @@ def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
     expected_settings = expected["settings"]
     if str(current_settings.get("decryption") or "") != "none":
         return False
-    current_clients = current_settings.get("clients") or []
-    expected_clients = expected_settings.get("clients") or []
-    if not current_clients or not expected_clients:
+    if str(current_settings.get("encryption") or "none") != "none":
         return False
-    current_client = current_clients[0] if isinstance(current_clients[0], dict) else {}
-    expected_client = expected_clients[0]
-    for key in ("id", "email", "flow"):
-        if str(current_client.get(key) or "") != str(expected_client.get(key) or ""):
-            return False
+    current_clients = sorted(
+        _vless_client_projection(row)
+        for row in (current_settings.get("clients") or [])
+        if isinstance(row, dict)
+    )
+    expected_clients = sorted(
+        _vless_client_projection(row)
+        for row in (expected_settings.get("clients") or [])
+        if isinstance(row, dict)
+    )
+    if current_clients != expected_clients:
+        return False
+    if bool(current.get("disableFlow", False)) is not False:
+        return False
 
     current_stream = _json_obj(current.get("streamSettings"))
     expected_stream = expected["streamSettings"]
@@ -562,6 +626,7 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
         if existing.get("id") is None:
             continue
         current = client.get_inbound(int(existing["id"]))
+        expected = _repair_existing_managed_payload(current, expected)
         if not _inbound_matches(current, expected):
             client.update_inbound(int(existing["id"]), expected)
             updated += 1
@@ -715,7 +780,10 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         warp_inbound_tags=[str(x) for x in warp_inbound_tags],
         managed_cdn_tag=managed_cdn_tag,
     )
-    client.update_xray_config(updated)
+    xray_updated = updated != original
+    if xray_updated:
+        client.update_xray_config(updated)
+    inbound_stats["xray_updated"] = 1 if xray_updated else 0
     inbound_stats["warp_created"] = 1 if warp_created else 0
     inbound_stats["warp_enabled"] = 1 if warp_enabled else 0
     return inbound_stats

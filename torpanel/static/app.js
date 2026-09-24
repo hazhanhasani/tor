@@ -183,3 +183,38 @@
     toggle();
   }
 })();
+
+
+  const syncLaunchForm = document.querySelector('[data-sync-launch]');
+  if (syncLaunchForm) {
+    syncLaunchForm.addEventListener('submit', () => {
+      const button = syncLaunchForm.querySelector('button[type="submit"]');
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'در حال شروع Sync…';
+      }
+    });
+  }
+
+  const syncStatus = document.querySelector('[data-sync-status]');
+  if (syncStatus?.dataset.syncActive === '1') {
+    const pollSync = async () => {
+      try {
+        const response = await fetch('/sync/status', {
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+          credentials: 'same-origin',
+        });
+        if (!response.ok) return;
+        const state = await response.json();
+        if (!['queued', 'running'].includes(state.status)) {
+          window.location.reload();
+          return;
+        }
+      } catch (_) {
+        // The background job must not make the page unusable if one poll fails.
+      }
+      window.setTimeout(pollSync, 3000);
+    };
+    window.setTimeout(pollSync, 2500);
+  }

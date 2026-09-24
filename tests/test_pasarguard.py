@@ -21,7 +21,7 @@ def test_pasarguard_builds_tor_and_tunnel_routes(monkeypatch):
     }
     locations = [{
         "slug": "de-a", "name": "Germany", "enabled": True,
-        "gateway_port": 31001, "ss_method": "2022-blake3-aes-128-gcm", "ss_password": "enc",
+        "gateway_port": 31001, "ss_method": "vless-reality", "ss_password": "enc",
     }]
     links = [{"uuid": "11111111-2222-3333-4444-555555555555", "enabled": True, "iran_overlay_ip": "10.203.0.1"}]
     config = build_synced_core_config(
@@ -30,6 +30,9 @@ def test_pasarguard_builds_tor_and_tunnel_routes(monkeypatch):
     by_tag = {row["tag"]: row for row in config["outbounds"]}
     assert "direct" in by_tag
     assert "tlm-pg-tor-de-a" in by_tag
+    assert by_tag["tlm-pg-tor-de-a"]["protocol"] == "vless"
+    assert by_tag["tlm-pg-tor-de-a"]["settings"]["flow"] == "xtls-rprx-vision"
+    assert by_tag["tlm-pg-tor-de-a"]["streamSettings"]["security"] == "reality"
     tunnel_tag = next(tag for tag in by_tag if tag.startswith("tlm-pg-tunnel-"))
     assert by_tag[tunnel_tag]["sendThrough"] == "10.203.0.1"
     _assert_current_freedom_schema(by_tag[tunnel_tag])

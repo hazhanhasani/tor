@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import copy
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 
 from .db import get_setting, set_location_xui_inbound_port, set_setting
 from .security import decrypt_secret
+from .vless import build_gateway_vless_outbound, build_managed_vless_inbound
 from .warp import xray_domain_rules
 from .xui_cdn import (
     CDN_MANAGED_TAG,
@@ -24,7 +24,6 @@ from .xui_cdn import (
 
 MANAGED_PREFIX = "torloc-"
 MANAGED_INBOUND_PREFIX = "torloc-in-"
-MANAGED_INBOUND_METHOD = "2022-blake3-aes-256-gcm"
 
 
 class XUIError(RuntimeError):
@@ -411,53 +410,13 @@ def managed_outbound_tag(location: dict[str, Any]) -> str:
     return MANAGED_PREFIX + str(location["slug"])
 
 
-def derive_managed_inbound_password(location: dict[str, Any], decrypt_password) -> str:
-    gateway_secret = decrypt_password(location["ss_password"]).encode("utf-8")
-    material = b"tor-location-manager:3x-ui-inbound:v1\x00" + str(location["slug"]).encode("utf-8") + b"\x00" + gateway_secret
-    return base64.b64encode(hashlib.sha256(material).digest()).decode("ascii")
-
-
-def _json_obj(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except (ValueError, TypeError):
-            return {}
-    return {}
-
-
 def managed_inbound_payload(location: dict[str, Any], decrypt_password) -> dict[str, Any]:
     port = int(location.get("xui_inbound_port") or 0)
     if not port:
         raise XUIError("پورت Inbound مدیریت‌شده هنوز تعیین نشده است.")
-    return {
-        "remark": f"Tor {str(location['country_code']).upper()} · {location['name']}",
-        "enable": True,
-        "expiryTime": 0,
-        "total": 0,
-        "trafficReset": "never",
-        "listen": "",
-        "port": port,
-        "protocol": "shadowsocks",
-        "settings": {
-            "method": MANAGED_INBOUND_METHOD,
-            "password": derive_managed_inbound_password(location, decrypt_password),
-            "network": "tcp",
-            "clients": [],
-            "ivCheck": False,
-        },
-        "streamSettings": {"network": "tcp", "security": "none"},
-        "tag": managed_inbound_tag(location),
-        "sniffing": {
-            "enabled": False,
-            "destOverride": ["http", "tls", "quic", "fakedns"],
-            "metadataOnly": False,
-            "routeOnly": False,
-        },
-    }
+    return build_managed_vless_inbound(
+        location, decrypt_password, tag=managed_inbound_tag(location), port=port
+    )
 
 
 def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
@@ -468,11 +427,36 @@ def _inbound_matches(current: dict[str, Any], expected: dict[str, Any]) -> bool:
             return False
     if bool(current.get("enable")) is not True:
         return False
+
     current_settings = _json_obj(current.get("settings"))
     expected_settings = expected["settings"]
-    for key in ("method", "password", "network"):
-        if current_settings.get(key) != expected_settings.get(key):
+    if str(current_settings.get("decryption") or "") != "none":
+        return False
+    current_clients = current_settings.get("clients") or []
+    expected_clients = expected_settings.get("clients") or []
+    if not current_clients or not expected_clients:
+        return False
+    current_client = current_clients[0] if isinstance(current_clients[0], dict) else {}
+    expected_client = expected_clients[0]
+    for key in ("id", "email", "flow"):
+        if str(current_client.get(key) or "") != str(expected_client.get(key) or ""):
             return False
+
+    current_stream = _json_obj(current.get("streamSettings"))
+    expected_stream = expected["streamSettings"]
+    if str(current_stream.get("network") or "") != "tcp":
+        return False
+    if str(current_stream.get("security") or "") != "reality":
+        return False
+    current_reality = _json_obj(current_stream.get("realitySettings"))
+    expected_reality = expected_stream["realitySettings"]
+    for key in ("dest", "privateKey"):
+        if str(current_reality.get(key) or "") != str(expected_reality.get(key) or ""):
+            return False
+    if list(current_reality.get("serverNames") or []) != list(expected_reality["serverNames"]):
+        return False
+    if list(current_reality.get("shortIds") or []) != list(expected_reality["shortIds"]):
+        return False
     return True
 
 
@@ -612,16 +596,9 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
         if not loc.get("enabled"):
             continue
         tag = managed_outbound_tag(loc)
-        outbounds.append({
-            "tag": tag,
-            "protocol": "shadowsocks",
-            "settings": {
-                "address": gateway_host,
-                "port": int(loc["gateway_port"]),
-                "method": loc["ss_method"],
-                "password": decrypt_password(loc["ss_password"]),
-            },
-        })
+        outbounds.append(
+            build_gateway_vless_outbound(loc, gateway_host, decrypt_password, tag)
+        )
         manual_tags = list(dict.fromkeys(str(x) for x in (loc.get("inbound_tags") or []) if x))
         if xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
             managed_rules.append({

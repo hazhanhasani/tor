@@ -50,12 +50,12 @@
             {% if xui_managed_inbound_mode == 'cloudflare' %}
             <div class="field"><span>پورت Tor Gateway</span><div class="callout"><strong>{{ location.gateway_port if location else 'خودکار' }}</strong><br><small>در حالت CDN این پورت داخلی است و برای جلوگیری از تداخل به‌صورت خودکار تخصیص داده می‌شود.</small></div><input name="gateway_port" type="hidden" value="{{ location.gateway_port if location else '' }}"></div>
             {% else %}
-            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="خالی = انتخاب خودکار"><small>اگر خالی بگذاری، پنل یک پورت آزاد برای SS2022 Gateway انتخاب می‌کند.</small></label>
+            <label class="field"><span>پورت Tor Gateway</span><input name="gateway_port" type="number" min="1024" max="65535" value="{{ location.gateway_port if location else '' }}" placeholder="خالی = انتخاب خودکار"><small>اگر خالی بگذاری، پنل یک پورت آزاد برای VLESS + REALITY Gateway انتخاب می‌کند.</small></label>
             {% endif %}
           </div>
           <div class="location-route" style="margin-bottom:0">
             <div class="route-node"><b>3x-ui / PasarGuard</b><span>Inbound انتخابی</span></div><span class="route-arrow">→</span>
-            <div class="route-node"><b>SS2022</b><span>Gateway رمزنگاری‌شده</span></div><span class="route-arrow">→</span>
+            <div class="route-node"><b>VLESS + REALITY</b><span>Gateway رمزنگاری‌شده</span></div><span class="route-arrow">→</span>
             <div class="route-node"><b>Tor Exit</b><span>کشور انتخابی</span></div>
           </div>
         </div>
@@ -75,7 +75,7 @@
               {% endfor %}
             </div>
             {% else %}
-            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. {{ 'Client اختصاصی این Location داخل Inbound مشترک Cloudflare هنگام Sync ساخته می‌شود.' if xui_managed_inbound_mode == 'cloudflare' else 'Inbound اختصاصی Tor همچنان هنگام Sync خودکار ساخته می‌شود.' }}</div>
+            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. {{ 'Client اختصاصی این Location داخل Inbound مشترک Cloudflare هنگام Sync ساخته می‌شود.' if xui_managed_inbound_mode == 'cloudflare' else 'Inbound اختصاصی VLESS + REALITY همچنان هنگام Sync خودکار ساخته می‌شود.' }}</div>
             {% endif %}
           </div>
 

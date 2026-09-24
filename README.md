@@ -2,7 +2,7 @@
 
 وب‌پنل مستقل برای اجرای چند خروجی Tor روی یک سرور و اتصال خودکار آن‌ها به 3x-ui.
 
-هر Location یک Tor instance مستقل با `ExitNodes {CC}` و `StrictNodes 1` دارد. SOCKS مربوط به Tor فقط روی `127.0.0.1` باز می‌شود. برای ارتباط سرور 3x-ui با این سرور، پروژه برای هر Location یک Shadowsocks 2022 رمزنگاری‌شده روی پورت مستقل ایجاد می‌کند و سپس از API رسمی 3x-ui، Outbound و Routing Rule متناظر را به Xray اضافه می‌کند.
+هر Location یک Tor instance مستقل با `ExitNodes {CC}` و `StrictNodes 1` دارد. SOCKS مربوط به Tor فقط روی `127.0.0.1` باز می‌شود. برای ارتباط 3x-ui یا PasarGuard با سرور Tor، پروژه برای هر Location یک Gateway مستقل **VLESS + REALITY** می‌سازد و Outbound و Routing Rule متناظر را به Core اضافه می‌کند.
 
 ## معماری
 
@@ -14,9 +14,9 @@ Client
   |
   | routing by inboundTag
   v
-SS2022 outbound: torloc-de-xxxx
+VLESS + REALITY outbound: torloc-de-xxxx
   |
-  | encrypted TCP
+  | encrypted REALITY transport
   v
 Tor Location Server : 31001
   |
@@ -52,14 +52,14 @@ Germany Tor exit
 - ساخت/ویرایش/حذف Location
 - Tor process مستقل برای هر کشور
 - پورت مستقل برای هر Location
-- Shadowsocks 2022 با کلید تصادفی 32-byte
+- VLESS + REALITY برای Gateway هر Location با UUID، X25519 و shortId اختصاصی
 - Sync خودکار Xray Outbounds و Routing Rules در 3x-ui
 - نگهداری تنظیمات موجود Xray؛ فقط tagهای با پیشوند `torloc-` مدیریت می‌شوند
 - جلوگیری از اختصاص هم‌زمان یک inbound به دو Location
 - Block کردن UDP روی مسیر Tor برای جلوگیری از مسیر خروجی غیرمنتظره
 - تست IP و کشور واقعی خروجی Tor از داخل Web Panel
 - systemd service و auto-start
-- رمزگذاری API Token و کلیدهای SS در دیتابیس با Fernet
+- رمزگذاری API Token و seed اختصاصی VLESS/REALITY در دیتابیس با Fernet
 - CSRF protection و session login
 - تست config Xray قبل از جایگزینی Gateway config
 - Update Center داخل پنل
@@ -148,6 +148,8 @@ SOCKSهای `19050+` به localhost bind می‌شوند و نباید در فا
 7. یک Location ایجاد کنید و Inboundهای موردنظر را انتخاب کنید.
 
 بعد از Save، پروژه Tor instance و Xray Gateway را می‌سازد، config فعلی Xray را از 3x-ui می‌خواند، Outbound اختصاصی `torloc-<slug>` و Rule مبتنی بر `inboundTag` را اضافه می‌کند و آن را از endpoint رسمی `/panel/api/xray/update` اعمال می‌کند.
+
+از نسخه `1.12.0`، مسیر بین Core و Tor Gateway از Shadowsocks 2022 به **VLESS + REALITY (TCP, XTLS Vision)** مهاجرت کرده است. نصب‌های قبلی نیازی به ساخت دوباره Location ندارند؛ seed رمزنگاری‌شده قبلی حفظ می‌شود و از آن UUID، کلید X25519 و shortId پایدار مشتق می‌شود. در حالت Legacy نیز Inbound مدیریت‌شده 3x-ui به VLESS + REALITY تبدیل می‌شود؛ حالت Cloudflare همچنان VLESS + WebSocket + TLS است.
 
 ## WARP داخل خود 3x-ui برای سایت‌های حساس به Tor
 

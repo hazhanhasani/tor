@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS locations (
     socks_port INTEGER NOT NULL UNIQUE,
     gateway_port INTEGER NOT NULL UNIQUE,
     xui_inbound_port INTEGER NOT NULL DEFAULT 0,
-    ss_method TEXT NOT NULL DEFAULT '2022-blake3-aes-128-gcm',
+    ss_method TEXT NOT NULL DEFAULT 'vless-reality',
     ss_password TEXT NOT NULL,
     inbound_tags TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -92,6 +92,9 @@ def _migrate(db: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_xui_inbound_port "
         "ON locations(xui_inbound_port) WHERE xui_inbound_port > 0"
     )
+    # Keep the old ss_* columns for upgrade compatibility. ss_password now
+    # stores the encrypted transport seed used to derive VLESS/REALITY keys.
+    db.execute("UPDATE locations SET ss_method='vless-reality' WHERE ss_method<>'vless-reality'")
 
 
 @contextmanager

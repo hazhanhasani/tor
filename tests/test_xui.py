@@ -5,10 +5,10 @@ from torpanel.xui import (
     XUIClient,
     XUISettings,
     build_synced_config,
-    derive_managed_inbound_password,
     managed_inbound_payload,
     normalize_api_token,
 )
+from torpanel.vless import managed_inbound_reality_identity
 
 
 def fake_decrypt(value):
@@ -17,7 +17,7 @@ def fake_decrypt(value):
 
 def test_sync_preserves_unmanaged_and_puts_api_first():
     original = {
-        "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}, {"tag": "torloc-old", "protocol": "shadowsocks", "settings": {}}],
+        "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}, {"tag": "torloc-old", "protocol": "vless", "settings": {}}],
         "routing": {"rules": [
             {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
             {"type": "field", "outboundTag": "torloc-old", "inboundTag": ["old"]},
@@ -26,10 +26,14 @@ def test_sync_preserves_unmanaged_and_puts_api_first():
     }
     locations = [{"slug": "de-123", "name": "Germany", "enabled": True, "inbound_tags": ["inbound-1"],
                   "gateway_port": 31001, "xui_inbound_port": 22001,
-                  "ss_method": "2022-blake3-aes-128-gcm", "ss_password": "enc"}]
+                  "ss_method": "vless-reality", "ss_password": "enc"}]
     result = build_synced_config(original, locations, "203.0.113.5", fake_decrypt)
     tags = [x.get("tag") for x in result["outbounds"]]
     assert "direct" in tags and "torloc-old" not in tags and "torloc-de-123" in tags
+    tor_out = next(x for x in result["outbounds"] if x.get("tag") == "torloc-de-123")
+    assert tor_out["protocol"] == "vless"
+    assert tor_out["settings"]["flow"] == "xtls-rprx-vision"
+    assert tor_out["streamSettings"]["security"] == "reality"
     rules = result["routing"]["rules"]
     assert rules[0]["outboundTag"] == "api"
     assert rules[1]["outboundTag"] == "torloc-de-123"
@@ -58,7 +62,7 @@ def test_disabled_location_is_not_added():
     assert result["routing"]["rules"] == []
 
 
-def test_managed_inbound_uses_separate_deterministic_ss2022_key():
+def test_managed_inbound_is_vless_reality_with_stable_separate_identity():
     loc = {
         "id": 1,
         "slug": "de-test",
@@ -67,17 +71,18 @@ def test_managed_inbound_uses_separate_deterministic_ss2022_key():
         "xui_inbound_port": 22001,
         "ss_password": "encrypted-gateway-secret",
     }
-    first = derive_managed_inbound_password(loc, fake_decrypt)
-    second = derive_managed_inbound_password(loc, fake_decrypt)
+    first = managed_inbound_reality_identity(loc, fake_decrypt)
+    second = managed_inbound_reality_identity(loc, fake_decrypt)
     assert first == second
-    assert len(base64.b64decode(first)) == 32
     payload = managed_inbound_payload(loc, fake_decrypt)
-    assert payload["protocol"] == "shadowsocks"
+    assert payload["protocol"] == "vless"
     assert payload["tag"] == "torloc-in-de-test"
     assert payload["port"] == 22001
-    assert payload["settings"]["method"] == "2022-blake3-aes-256-gcm"
-    assert payload["settings"]["password"] == first
-    assert payload["settings"]["password"] != fake_decrypt(loc["ss_password"])
+    assert payload["settings"]["decryption"] == "none"
+    assert payload["settings"]["clients"][0]["id"] == first.client_id
+    assert payload["settings"]["clients"][0]["flow"] == "xtls-rprx-vision"
+    assert payload["streamSettings"]["security"] == "reality"
+    assert payload["streamSettings"]["realitySettings"]["privateKey"] == first.private_key
 
 
 def test_normalize_api_token_accepts_raw_and_bearer():

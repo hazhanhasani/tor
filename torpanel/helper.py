@@ -21,6 +21,7 @@ from .cloudflare_origin import CloudflareOriginError, issue_origin_certificate
 from .config import ENV_FILE, GATEWAY_CONFIG, INSTANCE_DIR, TOR_DATA_DIR, XRAY_BIN
 from .db import get_setting, init_db, list_locations, list_tunnel_links, set_setting
 from .security import decrypt_secret
+from .vless import build_gateway_vless_inbound
 
 NODE_AGENT_CONFIG = Path("/etc/tor-location-node/agent.json")
 PANEL_TLS_DIR = Path("/etc/tor-location-manager/tls")
@@ -183,9 +184,11 @@ def torrc_for(loc: dict, tunnel_source_ip: str = "") -> str:
 
 
 def gateway_config(locations: list[dict]) -> dict:
-    # WARP is managed natively inside the connected 3x-ui/Xray instance.
-    # The local Tor gateway stays deterministic: one SS2022 inbound -> one Tor
-    # SOCKS outbound. This avoids a second WARP layer after 3x-ui routing.
+    # WARP is managed natively inside the connected panel/core.
+    # Each location exposes a VLESS + REALITY gateway that routes only TCP
+    # into its dedicated Tor SOCKS instance. The per-location transport seed
+    # remains encrypted in the database and deterministically derives UUID,
+    # X25519 keys and shortId; no plaintext gateway credential is stored.
     inbounds = []
     outbounds = [{"tag": "blocked", "protocol": "blackhole", "settings": {}}]
     rules = []
@@ -193,13 +196,7 @@ def gateway_config(locations: list[dict]) -> dict:
         slug = loc["slug"]
         inbound_tag = f"gateway-{slug}"
         tor_tag = f"tor-{slug}"
-        inbounds.append({
-            "tag": inbound_tag, "listen": "0.0.0.0", "port": int(loc["gateway_port"]),
-            "protocol": "shadowsocks",
-            "settings": {"network": "tcp", "method": loc["ss_method"],
-                         "password": decrypt_secret(loc["ss_password"])},
-            "sniffing": {"enabled": False},
-        })
+        inbounds.append(build_gateway_vless_inbound(loc, decrypt_secret, inbound_tag))
         outbounds.append({
             "tag": tor_tag, "protocol": "socks",
             "settings": {"address": "127.0.0.1", "port": int(loc["socks_port"])},

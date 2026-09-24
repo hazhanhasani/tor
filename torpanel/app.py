@@ -871,11 +871,13 @@ def make_app() -> Flask:
             try:
                 name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled = validate_location_form()
                 slug = f"{cc.lower()}-{secrets.token_hex(3)}"
-                password = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+                transport_seed = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
                 create_location({
                     "slug": slug, "name": name, "country_code": cc, "socks_port": next_socks_port(),
                     "gateway_port": gateway_port, "xui_inbound_port": xui_inbound_port,
-                    "ss_method": "2022-blake3-aes-128-gcm", "ss_password": encrypt_secret(password),
+                    # ss_* are legacy database column names kept for in-place upgrades.
+                    # The encrypted seed now derives VLESS/REALITY credentials.
+                    "ss_method": "vless-reality", "ss_password": encrypt_secret(transport_seed),
                     "inbound_tags": inbound_tags, "enabled": enabled,
                 })
                 set_pasarguard_tor_tags(slug, pg_tags)

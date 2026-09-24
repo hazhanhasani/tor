@@ -11,6 +11,7 @@ import urllib3
 from .db import get_setting, list_tunnel_links
 from .routing_state import pasarguard_tor_tags, tunnel_panel_tags
 from .security import decrypt_secret
+from .vless import build_gateway_vless_outbound
 
 TOR_OUTBOUND_PREFIX = "tlm-pg-tor-"
 TUNNEL_OUTBOUND_PREFIX = "tlm-pg-tunnel-"
@@ -245,16 +246,9 @@ def build_synced_core_config(
         if not gateway_host:
             raise PasarGuardError("Gateway host برای Tor روی PasarGuard تنظیم نشده است.")
         tag = TOR_OUTBOUND_PREFIX + str(loc["slug"])
-        outbounds.append({
-            "tag": tag,
-            "protocol": "shadowsocks",
-            "settings": {
-                "address": gateway_host,
-                "port": int(loc["gateway_port"]),
-                "method": loc["ss_method"],
-                "password": decrypt_password(loc["ss_password"]),
-            },
-        })
+        outbounds.append(
+            build_gateway_vless_outbound(loc, gateway_host, decrypt_password, tag)
+        )
         managed_rules.append({"type": "field", "inboundTag": tags, "outboundTag": tag})
 
     for link in tunnel_links if tunnel_links is not None else list_tunnel_links():

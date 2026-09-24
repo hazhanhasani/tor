@@ -12,16 +12,23 @@ from torpanel.helper import gateway_config, validation_temp_path
 from torpanel.security import encrypt_secret
 
 
-def test_gateway_blocks_udp_and_routes_tcp_to_tor(monkeypatch):
+def test_gateway_uses_vless_reality_and_routes_tcp_to_tor(monkeypatch):
     monkeypatch.setattr(helper, "get_setting", lambda key, default="": default)
     loc = {
         "slug": "de-test", "gateway_port": 31001, "socks_port": 19050,
-        "ss_method": "2022-blake3-aes-128-gcm",
+        "ss_method": "vless-reality",
         "ss_password": encrypt_secret(base64.b64encode(b"x" * 32).decode()),
     }
     cfg = gateway_config([loc])
-    assert cfg["inbounds"][0]["listen"] == "0.0.0.0"
-    assert cfg["inbounds"][0]["settings"]["network"] == "tcp"
+    inbound = cfg["inbounds"][0]
+    assert inbound["listen"] == "0.0.0.0"
+    assert inbound["protocol"] == "vless"
+    assert inbound["settings"]["decryption"] == "none"
+    assert inbound["settings"]["clients"][0]["flow"] == "xtls-rprx-vision"
+    assert inbound["streamSettings"]["network"] == "tcp"
+    assert inbound["streamSettings"]["security"] == "reality"
+    assert inbound["streamSettings"]["realitySettings"]["privateKey"]
+    assert inbound["streamSettings"]["realitySettings"]["shortIds"]
     assert cfg["outbounds"][1]["protocol"] == "socks"
     assert cfg["routing"]["rules"][0]["network"] == "udp"
     assert cfg["routing"]["rules"][0]["outboundTag"] == "blocked"
@@ -106,7 +113,7 @@ def test_gateway_never_adds_legacy_local_warp_proxy(monkeypatch):
     monkeypatch.setattr(helper, "get_setting", lambda key, default="": settings.get(key, default))
     loc = {
         "slug": "de-test", "gateway_port": 31001, "socks_port": 19050,
-        "ss_method": "2022-blake3-aes-128-gcm",
+        "ss_method": "vless-reality",
         "ss_password": encrypt_secret(base64.b64encode(b"x" * 32).decode()),
     }
     cfg = gateway_config([loc])

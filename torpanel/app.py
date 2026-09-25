@@ -52,7 +52,7 @@ from .routing_state import (
     pasarguard_tor_tags,
     set_pasarguard_tor_tags,
 )
-from .runtime import apply_panel_tls, apply_runtime, journal_tail, service_active, test_exit, unit_state
+from .runtime import apply_panel_tls, apply_runtime, journal_tail, services_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .sync_job import launch_sync_job, sync_job_state
 from .tunnel_routes import bp as tunnel_bp
@@ -179,8 +179,9 @@ def make_app() -> Flask:
     @login_required
     def dashboard():
         locations = list_locations()
+        active_states = services_active([str(loc["slug"]) for loc in locations])
         for loc in locations:
-            loc["active"] = service_active(loc["slug"])
+            loc["active"] = active_states.get(str(loc["slug"]), False)
         active_count = sum(1 for loc in locations if loc["active"])
         enabled_count = sum(1 for loc in locations if loc["enabled"])
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
@@ -209,8 +210,9 @@ def make_app() -> Flask:
     @login_required
     def index():
         locations = list_locations()
+        active_states = services_active([str(loc["slug"]) for loc in locations])
         for loc in locations:
-            loc["active"] = service_active(loc["slug"])
+            loc["active"] = active_states.get(str(loc["slug"]), False)
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
         xui_cfg = xui_current_settings()
         if xui_cfg.managed_inbound_mode == "cloudflare":
@@ -998,7 +1000,7 @@ def make_app() -> Flask:
         try:
             if launch_sync_job():
                 flash(
-                    "بازسازی و Sync در پس‌زمینه شروع شد؛ پنل هنگام انجام کار در دسترس می‌ماند.",
+                    "بازسازی و Sync در پس‌زمینه شروع شد؛ وضعیت عملیات در همین صفحه نمایش داده می‌شود.",
                     "success",
                 )
             else:

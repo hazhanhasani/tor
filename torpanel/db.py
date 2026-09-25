@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -97,14 +98,29 @@ def _migrate(db: sqlite3.Connection) -> None:
     db.execute("UPDATE locations SET ss_method='vless-reality' WHERE ss_method<>'vless-reality'")
 
 
+_SCHEMA_READY = False
+_SCHEMA_LOCK = threading.Lock()
+
+
 @contextmanager
 def connect():
+    """Create the schema once per process, not on every polling/read request.
+
+    Executing DDL for each get_setting() caused needless SQLite write locks
+    while a background sync was updating its status.
+    """
+    global _SCHEMA_READY
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=15)
     db.row_factory = sqlite3.Row
     try:
-        db.executescript(SCHEMA)
-        _migrate(db)
+        if not _SCHEMA_READY:
+            with _SCHEMA_LOCK:
+                if not _SCHEMA_READY:
+                    db.executescript(SCHEMA)
+                    _migrate(db)
+                    db.commit()
+                    _SCHEMA_READY = True
         yield db
         db.commit()
     finally:

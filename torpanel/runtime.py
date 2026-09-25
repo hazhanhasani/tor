@@ -72,7 +72,7 @@ def services_active(slugs: list[str]) -> dict[str, bool]:
     for offset in range(0, len(slugs), 64):
         batch = slugs[offset:offset + 64]
         units = [f"tor-location@{slug}.service" for slug in batch]
-        if any(not re.fullmatch(r"[A-Za-z0-9@_.-]+\\.service", unit) for unit in units):
+        if any(not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit) for unit in units):
             raise ValueError("Invalid service unit")
         try:
             check = subprocess.run(

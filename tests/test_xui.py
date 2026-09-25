@@ -309,7 +309,7 @@ def test_reconcile_match_rejects_reality_without_3xui_public_metadata():
 
 
 
-def test_repair_existing_managed_payload_preserves_real_clients_and_removes_bootstrap():
+def test_repair_existing_managed_payload_preserves_real_clients_and_bootstrap():
     loc = {
         "id": 1,
         "slug": "fi-test",
@@ -342,7 +342,10 @@ def test_repair_existing_managed_payload_preserves_real_clients_and_removes_boot
 
     repaired = xui_module._repair_existing_managed_payload(current, expected)
     clients = repaired["settings"]["clients"]
-    assert [row["email"] for row in clients] == ["alice@example.com"]
+    assert [row["email"] for row in clients] == [
+        "alice@example.com", bootstrap["email"]
+    ]
+    assert clients[1]["id"] == bootstrap["id"]
     assert clients[0]["id"] == "11111111-2222-4333-8444-555555555555"
     assert clients[0]["subId"] == "keep-me"
     assert clients[0]["totalGB"] == 123
@@ -432,3 +435,92 @@ def test_build_synced_config_is_idempotent_for_noop_sync():
     first = build_synced_config(original, locations, "203.0.113.5", fake_decrypt)
     second = build_synced_config(first, locations, "203.0.113.5", fake_decrypt)
     assert second == first
+
+
+def test_manual_inbounds_do_not_create_another_inbound_or_client():
+    loc = {
+        "id": 17, "slug": "de-manual", "name": "Germany", "country_code": "DE",
+        "enabled": True, "gateway_port": 31001, "socks_port": 19050,
+        "xui_inbound_port": 0, "ss_password": "enc",
+        "inbound_tags": ["existing-user-inbound"],
+    }
+
+    class Client:
+        settings = XUISettings(
+            base_url="https://panel.example.com/", api_token="token",
+            gateway_host="203.0.113.5", verify_tls=True
+        )
+
+        def list_inbounds(self):
+            return [{"id": 91, "tag": "existing-user-inbound", "port": 10001}]
+
+        def add_inbound(self, payload):
+            raise AssertionError("do not create a new inbound for a manual route")
+
+        def delete_inbound(self, inbound_id):
+            raise AssertionError("do not delete any inbound during Sync")
+
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["managed_tags"] == []
+
+    config = build_synced_config(
+        {"outbounds": [], "routing": {"rules": []}},
+        [loc], "203.0.113.5", fake_decrypt,
+        managed_inbound_tags=set(result["managed_tags"]),
+    )
+    assert config["routing"]["rules"][0]["inboundTag"] == ["existing-user-inbound"]
+
+
+def test_stale_managed_inbound_is_never_automatically_deleted():
+    class Client:
+        settings = XUISettings(
+            base_url="https://panel.example.com/", api_token="token",
+            gateway_host="203.0.113.5", verify_tls=True
+        )
+
+        def list_inbounds(self):
+            return [{"id": 91, "tag": "torloc-in-old", "port": 21000}]
+
+        def delete_inbound(self, inbound_id):
+            raise AssertionError("a previous location may still have clients")
+
+    result = xui_module.reconcile_managed_inbounds(Client(), [], fake_decrypt)
+    assert result["removed"] == 0
+    assert result["managed_tags"] == []
+
+
+def test_repair_fails_closed_if_inbound_clients_not_returned():
+    loc = {
+        "id": 1, "slug": "de-incomplete", "name": "Germany",
+        "country_code": "DE", "xui_inbound_port": 21000, "ss_password": "enc",
+    }
+    expected = managed_inbound_payload(loc, fake_decrypt)
+    import pytest
+    with pytest.raises(xui_module.XUIError, match="Sync"):
+        xui_module._repair_existing_managed_payload(
+            {"settings": {"decryption": "none"}}, expected
+        )
+
+
+def test_cloudflare_migration_keeps_existing_legacy_routes():
+    loc = {
+        "slug": "de-123", "name": "Germany", "country_code": "DE",
+        "enabled": True, "gateway_port": 31001, "ss_password": "enc",
+        "inbound_tags": [],
+    }
+    settings = XUISettings(
+        base_url="https://panel.example.com/", api_token="token",
+        gateway_host="203.0.113.5", verify_tls=True,
+        managed_inbound_mode="cloudflare",
+    )
+    result = build_synced_config(
+        {"outbounds": [], "routing": {"rules": []}}, [loc],
+        "203.0.113.5", fake_decrypt, settings,
+        managed_cdn_tag="torloc-cdn",
+        preserved_legacy_tags={"torloc-in-de-123"},
+    )
+    assert any(
+        row.get("inboundTag") == ["torloc-in-de-123"]
+        for row in result["routing"]["rules"]
+    )

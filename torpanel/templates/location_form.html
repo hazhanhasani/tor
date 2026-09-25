@@ -51,9 +51,9 @@
           <div class="form-section-title"><span class="form-section-number">02</span><div><h3>پورت‌ها و مسیر اختصاصی</h3><p>Inbound سمت 3x-ui و Gateway سمت Tor باید پورت متفاوت داشته باشند.</p></div></div>
           <div class="two">
             {% if xui_managed_inbound_mode == 'cloudflare' %}
-            <div class="field"><span>Inbound مدیریت‌شده 3x-ui</span><div class="callout success"><strong>Cloudflare CDN مشترک</strong><br><code>{{ xui_cdn_domain or 'دامنه CDN' }}:{{ xui_cdn_port }}</code><br><small>برای این Location یک Client VLESS اختصاصی داخل همان Inbound مشترک ساخته می‌شود؛ پورت جدا لازم نیست.</small></div><input name="xui_inbound_port" type="hidden" value=""></div>
+            <div class="field"><span>Inbound مدیریت‌شده 3x-ui</span><div class="callout success"><strong>Cloudflare CDN مشترک</strong><br><code>{{ xui_cdn_domain or 'دامنه CDN' }}:{{ xui_cdn_port }}</code><br><small>کاربر جدید فقط با فعال‌کردن گزینهٔ صریح «ساخت کاربر اختصاصی» ساخته می‌شود؛ در حالت معمول، Inbound موجود انتخاب می‌شود.</small></div><input name="xui_inbound_port" type="hidden" value=""></div>
             {% else %}
-            <label class="field"><span>پورت Inbound مدیریت‌شده در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>برای 3x-ui یک Inbound اختصاصی خودکار می‌سازد. PasarGuard از Inboundهای موجود Core استفاده می‌کند.</small></label>
+            <label class="field"><span>پورت Inbound مدیریت‌شده در 3x-ui</span><input name="xui_inbound_port" type="number" min="1024" max="65535" value="{{ location.xui_inbound_port if location and location.xui_inbound_port else '' }}" placeholder="خالی = انتخاب خودکار"><small>فقط در حالت ساخت کاربر اختصاصی جدید استفاده می‌شود؛ با انتخاب Inbound موجود هیچ کاربر جدیدی ساخته نمی‌شود.</small></label>
             {% endif %}
             {% if xui_managed_inbound_mode == 'cloudflare' %}
             <div class="field"><span>پورت Tor Gateway</span><div class="callout"><strong>{{ location.gateway_port if location else 'خودکار' }}</strong><br><small>در حالت CDN این پورت داخلی است و برای جلوگیری از تداخل به‌صورت خودکار تخصیص داده می‌شود.</small></div><input name="gateway_port" type="hidden" value="{{ location.gateway_port if location else '' }}"></div>
@@ -75,7 +75,7 @@
           <div class="form-section-title"><span class="form-section-number">03</span><div><h3>Routing پنل‌ها</h3><p>Inboundهای هر پنل را انتخاب کنید تا فقط همان ورودی‌ها از این Tor Exit خارج شوند.</p></div></div>
 
           <div class="panel" style="box-shadow:none;margin-bottom:14px">
-            <div class="section-title"><div><h2>3x-ui</h2><p>علاوه بر Inbound اختصاصی این لوکیشن، ورودی‌های دستی دلخواه</p></div><span class="status {{ 'ok' if inbounds else 'off' }}">{{ inbounds|length }} Inbound</span></div>
+            <div class="section-title"><div><h2>3x-ui</h2><p>کاربران Inbound موجود را بدون تغییر UUID، حجم یا اشتراک به خروجی جدید متصل کنید.</p></div><span class="status {{ 'ok' if inbounds else 'off' }}">{{ inbounds|length }} Inbound</span></div>
             {% if inbounds %}
             <div class="checks">
               {% for item in inbounds %}
@@ -83,8 +83,12 @@
               {% endfor %}
             </div>
             {% else %}
-            <div class="callout">Inbound دستی 3x-ui در دسترس نیست. {{ 'Client اختصاصی این Location داخل Inbound مشترک Cloudflare هنگام Sync ساخته می‌شود.' if xui_managed_inbound_mode == 'cloudflare' else 'Inbound اختصاصی VLESS + REALITY همچنان هنگام Sync خودکار ساخته می‌شود.' }}</div>
+            <div class="callout warning">Inbound موجود 3x-ui در دسترس نیست. برای اتصال کاربران فعلی ابتدا اتصال پنل را بررسی کنید؛ ساخت کاربر اختصاصی فقط با انتخاب صریح گزینهٔ زیر انجام می‌شود.</div>
             {% endif %}
+            <label class="check check-card" style="margin-top:12px">
+              <input type="checkbox" name="xui_auto_client" {% if location and location.xui_auto_client and not location.inbound_tags %}checked{% endif %}>
+              <span><b>ساخت کاربر اختصاصی جدید در 3x-ui (اختیاری)</b><small>پیش‌فرض خاموش است. تنها زمانی انتخاب کنید که قصد ساخت یک کاربر جدید دارید؛ با انتخاب هر Inbound موجود نمی‌توان این گزینه را هم‌زمان فعال کرد.</small></span>
+            </label>
           </div>
 
           <div class="panel" style="box-shadow:none;margin-bottom:14px">
@@ -111,12 +115,12 @@
           <div class="review-list">
             <div class="review-row"><span>نام لوکیشن</span><strong data-review-name>—</strong></div>
             <div class="review-row"><span>کشور خروجی</span><strong data-review-country>—</strong></div>
-            <div class="review-row"><span>Inbound مدیریت‌شده 3x-ui</span><strong {% if xui_managed_inbound_mode != 'cloudflare' %}data-review-inbound{% endif %}>{{ ('Cloudflare · ' ~ (xui_cdn_domain or 'CDN') ~ ':' ~ xui_cdn_port) if xui_managed_inbound_mode == 'cloudflare' else 'خودکار' }}</strong></div>
+            <div class="review-row"><span>رفتار 3x-ui</span><strong data-review-inbound>استفاده از کاربران موجود</strong></div>
             <div class="review-row"><span>پورت Gateway</span><strong data-review-gateway>—</strong></div>
             <div class="review-row"><span>Routing پنل‌ها</span><strong data-review-extra>بدون Route اضافی</strong></div>
             <div class="review-row"><span>وضعیت</span><strong data-review-state>فعال</strong></div>
           </div>
-          <div class="callout" style="margin-top:14px"><strong>پس از ذخیره:</strong> Tor instance و Gateway ساخته می‌شوند؛ 3x-ui و PasarGuard فقط Tagهای مدیریت‌شده خود پروژه را Reconcile می‌کنند و Routeهای دستی غیرمرتبط دست‌نخورده می‌مانند.</div>
+          <div class="callout" style="margin-top:14px"><strong>پس از ذخیره:</strong> Tor و Gateway لوکیشن ساخته می‌شوند؛ کاربران Inboundهای انتخابی بدون ایجاد حساب تازه یا تغییر مشخصات به خروجی انتخاب‌شده هدایت می‌شوند. ساخت کاربر جدید فقط با انتخاب صریح گزینه مربوطه انجام می‌شود.</div>
         </div>
         <div class="wizard-nav"><button class="button" type="button" data-wizard-prev>قبلی</button><button class="button primary" type="submit">{{ icon('check') }} {{ 'ذخیره تغییرات' if location else 'ساخت و اعمال لوکیشن' }}</button></div>
       </section>

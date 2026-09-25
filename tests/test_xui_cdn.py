@@ -607,3 +607,151 @@ def test_no_enabled_locations_disables_generated_clients_without_deleting_inboun
     }
     assert not by_email[managed_client_email(loc)]["enable"]
     assert by_email["manual@example.com"]["enable"]
+
+
+def test_new_manual_location_does_not_create_cdn_client_or_inbound():
+    settings = cdn_settings()
+    loc = location("fr-manual", "France", "FR", 31010)
+    loc["xui_auto_client"] = False
+    loc["inbound_tags"] = ["existing-vless"]
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [{"id": 10, "tag": "existing-vless", "port": 10005}]
+        def get_web_cert_files(self):
+            raise AssertionError("CDN certificate is not needed for a manual route")
+        def add_inbound(self, payload):
+            raise AssertionError("Manual location must not create an inbound")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Manual location must not rewrite clients")
+
+    result = reconcile_cdn_inbound(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["cdn_managed_emails"] == []
+    assert result["cdn_inbound_tag"] == ""
+
+    routed = build_synced_config(
+        {"outbounds": [], "routing": {"rules": []}}, [loc], "127.0.0.1",
+        fake_decrypt, settings, cdn_managed_emails=set(),
+        managed_cdn_tag=result["cdn_inbound_tag"],
+    )
+    assert len(routed["routing"]["rules"]) == 1
+    assert routed["routing"]["rules"][0]["inboundTag"] == ["existing-vless"]
+    assert "user" not in routed["routing"]["rules"][0]
+
+
+def test_manual_location_does_not_add_user_to_existing_shared_cdn():
+    settings = cdn_settings()
+    old = location()
+    new = location("fr-manual", "France", "FR", 31002)
+    new["xui_auto_client"] = False
+    new["inbound_tags"] = ["existing-vless"]
+    certs = {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+    current = build_cdn_inbound_payload([old], settings, certs, fake_decrypt)
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [
+                {"id": 1, "tag": CDN_MANAGED_TAG, "remark": CDN_MANAGED_REMARK,
+                 "port": settings.cdn_port},
+                {"id": 10, "tag": "existing-vless", "port": 10005},
+            ]
+        def get_inbound(self, inbound_id):
+            return current
+        def get_web_cert_files(self):
+            return certs
+        def add_inbound(self, payload):
+            raise AssertionError("CDN inbound is already present")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Adding manual location must not add CDN client")
+
+    result = reconcile_cdn_inbound(Client(), [old, new], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["cdn_managed_emails"] == [managed_client_email(old)]
+    assert managed_client_email(new) not in result["cdn_managed_emails"]
+
+
+def test_existing_shared_cdn_is_not_rewritten_for_manual_only_locations():
+    settings = cdn_settings()
+    manual = location()
+    manual["xui_auto_client"] = False
+    manual["inbound_tags"] = ["existing-vless"]
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [
+                {"id": 1, "tag": CDN_MANAGED_TAG,
+                 "remark": CDN_MANAGED_REMARK, "port": settings.cdn_port},
+                {"id": 10, "tag": "existing-vless", "port": 10005},
+            ]
+        def get_inbound(self, inbound_id):
+            return {"settings": {"clients": [
+                {"id": "old", "email": "real@example.com", "enable": True}
+            ]}}
+        def get_web_cert_files(self):
+            raise AssertionError("No TLS read for unchanged manual-only route")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Shared CDN must remain untouched")
+
+    result = reconcile_cdn_inbound(Client(), [manual], fake_decrypt)
+    assert result["updated"] == result["created"] == 0
+    assert result["cdn_managed_emails"] == []
+
+
+def test_sync_manual_only_cdn_never_routes_warp_to_missing_cdn(monkeypatch):
+    import torpanel.xui as xui_module
+
+    settings = cdn_settings()
+    manual = location("fr-manual", "France", "FR", 31005)
+    manual["xui_auto_client"] = False
+    manual["inbound_tags"] = ["existing-vless"]
+    original = {
+        "outbounds": [{"tag": "warp", "protocol": "wireguard", "settings": {}}],
+        "routing": {"rules": []},
+    }
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+            self.saved = None
+        def list_inbounds(self):
+            return [{"id": 22, "tag": "existing-vless", "port": 10005}]
+        def get_xray_config(self):
+            return original
+        def ensure_warp_outbound(self, config):
+            return config, False
+        def update_xray_config(self, config):
+            self.saved = config
+        def get_web_cert_files(self):
+            raise AssertionError("No CDN inbound or cert needed for existing users")
+        def add_inbound(self, payload):
+            raise AssertionError("Unexpected generated user")
+
+    client = Client()
+    values = {
+        "xui_cdn_runtime_tag": CDN_MANAGED_TAG,
+        "xui_warp_enabled": "1",
+        "xui_warp_mode": "domains",
+        "xui_warp_domains_json": '["example.com"]',
+        "xui_warp_inbound_tags": '["torloc-cdn"]',
+    }
+    monkeypatch.setattr(xui_module, "current_settings", lambda: settings)
+    monkeypatch.setattr(xui_module, "XUIClient", lambda settings: client)
+    monkeypatch.setattr(
+        xui_module, "get_setting", lambda key, default="": values.get(key, default)
+    )
+    monkeypatch.setattr(xui_module, "set_setting", lambda key, value: None)
+
+    result = xui_module.sync_locations([manual], fake_decrypt)
+    assert result["created"] == 0
+    assert client.saved is not None
+    rules = client.saved["routing"]["rules"]
+    assert len(rules) == 1
+    assert rules[0]["inboundTag"] == ["existing-vless"]
+    assert "user" not in rules[0]
+    assert not any(rule.get("ruleTag") == "torloc-warp" for rule in rules)

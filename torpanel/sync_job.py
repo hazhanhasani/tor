@@ -5,6 +5,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,10 +147,20 @@ def run_sync_job(job_id: str) -> int:
             print(f"[{_now()}] sync job {job_id} started", flush=True)
             state["message"] = "در حال بررسی و اعمال تغییرات Tor…"
             _write_state(state)
+            began = time.monotonic()
             apply_runtime()
+            runtime_seconds = round(time.monotonic() - began, 2)
+            print(f"[{_now()}] Tor runtime applied in {runtime_seconds}s", flush=True)
             state["message"] = "در حال همگام‌سازی امن مسیرهای پنل‌ها…"
             _write_state(state)
+            panels_began = time.monotonic()
             results = sync_all_panels(list_locations(), decrypt_secret)
+            panel_seconds = round(time.monotonic() - panels_began, 2)
+            print(f"[{_now()}] panel reconcile finished in {panel_seconds}s", flush=True)
+            state["timings"] = {
+                "runtime_seconds": runtime_seconds,
+                "panels_seconds": panel_seconds,
+            }
             failed = {
                 key: str(row.get("error") or "خطای نامشخص")
                 for key, row in results.items()
@@ -157,6 +169,12 @@ def run_sync_job(job_id: str) -> int:
             succeeded = [
                 key for key, row in results.items()
                 if row.get("ok") is True
+            ]
+            warnings = [
+                f"{provider}: {warning}"
+                for provider, row in results.items()
+                for warning in (row.get("warnings") or [])
+                if isinstance(warning, str) and warning
             ]
             if failed and succeeded:
                 status = "partial"
@@ -168,9 +186,14 @@ def run_sync_job(job_id: str) -> int:
                 message = "Sync ناموفق بود: " + "؛ ".join(
                     f"{key}: {error}" for key, error in failed.items()
                 )
+            elif warnings:
+                status = "partial"
+                message = "Sync انجام شد، اما برخی اینباندها برای حفظ کاربران تغییر نکردند: " + "؛ ".join(warnings)
             else:
                 status = "success"
                 message = "Tor، Tunnel و پنل‌ها با موفقیت Reconcile شدند."
+            if warnings and failed:
+                message += "؛ " + "؛ ".join(warnings)
             state.update({
                 "status": status,
                 "message": message,
@@ -188,6 +211,7 @@ def run_sync_job(job_id: str) -> int:
             })
             _write_state(state)
             print(f"[{_now()}] sync job {job_id} failed: {exc}", flush=True)
+            traceback.print_exc()
             return 1
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)

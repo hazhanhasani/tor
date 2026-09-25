@@ -349,7 +349,7 @@ def test_repair_existing_managed_payload_preserves_real_clients_and_bootstrap():
     assert clients[0]["id"] == "11111111-2222-4333-8444-555555555555"
     assert clients[0]["subId"] == "keep-me"
     assert clients[0]["totalGB"] == 123
-    assert clients[0]["flow"] == "xtls-rprx-vision"
+    assert clients[0]["flow"] == ""  # Existing subscription is unchanged
     assert repaired["shareAddrStrategy"] == "custom"
     assert repaired["shareAddr"] == "edge.example.com"
 
@@ -410,10 +410,10 @@ def test_reconcile_managed_inbound_does_not_delete_existing_users(monkeypatch):
     monkeypatch.setattr(xui_module, "set_location_xui_inbound_port", lambda *_: None)
     client = FakeClient()
     result = xui_module.reconcile_managed_inbounds(client, [loc], fake_decrypt)
-    assert result["updated"] == 1
-    assert client.updated is not None
-    assert [c["email"] for c in client.updated["settings"]["clients"]] == ["real-user@example.com"]
-    assert client.updated["settings"]["clients"][0]["flow"] == "xtls-rprx-vision"
+    assert result["updated"] == 0
+    assert result["removed"] == 0
+    assert client.updated is None
+    assert current["settings"]["clients"][0]["flow"] == ""
 
 
 def test_build_synced_config_is_idempotent_for_noop_sync():
@@ -524,3 +524,129 @@ def test_cloudflare_migration_keeps_existing_legacy_routes():
         row.get("inboundTag") == ["torloc-in-de-123"]
         for row in result["routing"]["rules"]
     )
+
+
+def test_existing_managed_inbound_with_manual_selection_never_updates_clients(monkeypatch):
+    loc = {
+        "id": 2, "slug": "fr-manual", "name": "France", "country_code": "FR",
+        "enabled": True, "gateway_port": 31001, "socks_port": 19050,
+        "xui_inbound_port": 21000, "ss_password": "enc",
+        "inbound_tags": ["customer-inbound"],
+    }
+
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return [
+                {"id": 1, "tag": "torloc-in-fr-manual", "port": 21000},
+                {"id": 2, "tag": "customer-inbound", "port": 5555},
+            ]
+        def add_inbound(self, payload):
+            raise AssertionError("Do not create client when manual inbound selected")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Do not rewrite customer inbound on Sync")
+        def get_inbound(self, inbound_id):
+            raise AssertionError("Do not fetch full client list when only routing")
+
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["managed_tags"] == ["torloc-in-fr-manual"]
+    # Both customer and legacy Tor routes remain active.
+    config = build_synced_config(
+        {"outbounds": [], "routing": {"rules": []}}, [loc], "host",
+        fake_decrypt, managed_inbound_tags=set(result["managed_tags"]),
+    )
+    assert config["routing"]["rules"][0]["inboundTag"] == [
+        "torloc-in-fr-manual", "customer-inbound"
+    ]
+
+
+def test_sync_does_not_rewrite_real_clients_when_transport_differs(monkeypatch):
+    loc = {
+        "id": 3, "slug": "fr-legacy", "name": "France", "country_code": "FR",
+        "enabled": True, "gateway_port": 31001, "socks_port": 19050,
+        "xui_inbound_port": 21000, "ss_password": "enc", "inbound_tags": [],
+    }
+    live = managed_inbound_payload(loc, fake_decrypt)
+    live["streamSettings"]["realitySettings"]["target"] = "old.example.com:443"
+    live["settings"]["clients"] = [
+        {"email": "paid@example.com", "id": "same-uuid", "flow": "",
+         "subId": "same-sub", "enable": True, "totalGB": 654321}
+    ]
+
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return [{"id": 22, "tag": "torloc-in-fr-legacy", "port": 21000}]
+        def get_inbound(self, inbound_id):
+            return live
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Existing user credentials must not be rewritten")
+
+    monkeypatch.setattr(xui_module, "set_location_xui_inbound_port", lambda *_: None)
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["updated"] == result["removed"] == 0
+    assert result["preserved"] == 1
+    assert len(result["warnings"]) == 1
+    assert live["settings"]["clients"][0]["subId"] == "same-sub"
+
+
+def test_sync_rejects_missing_selected_inbound_before_any_mutation():
+    loc = {
+        "slug": "fr-missing", "enabled": True,
+        "inbound_tags": ["customer-inbound-that-was-removed"]
+    }
+
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return []
+        def add_inbound(self, payload):
+            raise AssertionError("No partial reconcile when a selected inbound is missing")
+
+    import pytest
+    with pytest.raises(xui_module.XUIError, match="پیدا نشدند"):
+        xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+
+
+def test_new_location_without_auto_opt_in_does_not_generate_client():
+    loc = {
+        "id": 25, "slug": "nl-manual", "name": "Netherlands",
+        "country_code": "NL", "enabled": True,
+        "gateway_port": 31001, "socks_port": 19050,
+        "xui_inbound_port": 0, "ss_password": "enc",
+        "inbound_tags": ["paid-users"], "xui_auto_client": False,
+    }
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return [{"id": 3, "tag": "paid-users", "port": 443}]
+        def add_inbound(self, payload):
+            raise AssertionError("New manual location must not add a client")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Existing customer inbound must not change")
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == 0
+    original = {"outbounds": [], "routing": {"rules": []}}
+    config = build_synced_config(
+        original, [loc], "host", fake_decrypt,
+        managed_inbound_tags=set(result["managed_tags"]),
+    )
+    assert config["routing"]["rules"][0]["inboundTag"] == ["paid-users"]
+
+
+def test_new_location_without_manual_tag_or_opt_in_never_provisions_auto_user():
+    loc = {
+        "id": 26, "slug": "nl-no-user", "name": "Netherlands",
+        "country_code": "NL", "enabled": True,
+        "inbound_tags": [], "xui_auto_client": False,
+    }
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return []
+        def add_inbound(self, payload):
+            raise AssertionError("Auto-client creation requires explicit opt-in")
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == 0
+    assert result["managed_tags"] == []

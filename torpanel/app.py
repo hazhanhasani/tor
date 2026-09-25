@@ -52,7 +52,7 @@ from .routing_state import (
     pasarguard_tor_tags,
     set_pasarguard_tor_tags,
 )
-from .runtime import apply_panel_tls, apply_runtime, journal_tail, service_active, test_exit, unit_state
+from .runtime import apply_panel_tls, apply_runtime, journal_tail, services_active, test_exit, unit_state
 from .security import csrf_token, decrypt_secret, encrypt_secret, validate_csrf
 from .sync_job import launch_sync_job, sync_job_state
 from .tunnel_routes import bp as tunnel_bp
@@ -179,8 +179,9 @@ def make_app() -> Flask:
     @login_required
     def dashboard():
         locations = list_locations()
+        active_states = services_active([str(loc["slug"]) for loc in locations])
         for loc in locations:
-            loc["active"] = service_active(loc["slug"])
+            loc["active"] = active_states.get(str(loc["slug"]), False)
         active_count = sum(1 for loc in locations if loc["active"])
         enabled_count = sum(1 for loc in locations if loc["enabled"])
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
@@ -209,8 +210,9 @@ def make_app() -> Flask:
     @login_required
     def index():
         locations = list_locations()
+        active_states = services_active([str(loc["slug"]) for loc in locations])
         for loc in locations:
-            loc["active"] = service_active(loc["slug"])
+            loc["active"] = active_states.get(str(loc["slug"]), False)
         configured = bool(get_setting("xui_base_url") and get_setting("xui_api_token"))
         xui_cfg = xui_current_settings()
         if xui_cfg.managed_inbound_mode == "cloudflare":
@@ -806,7 +808,21 @@ def make_app() -> Flask:
         xui_inbound_port_raw = request.form.get("xui_inbound_port", "").strip()
         inbound_tags = [x for x in request.form.getlist("inbound_tags") if x]
         pg_inbound_tags = [x for x in request.form.getlist("pasarguard_inbound_tags") if x]
+        xui_auto_client = request.form.get("xui_auto_client") == "on"
         enabled = request.form.get("enabled") == "on"
+        if xui_auto_client and inbound_tags:
+            raise ValueError(
+                "برای جلوگیری از ساخت کاربر اضافی، یا Inbound موجود را انتخاب کنید "
+                "یا ایجاد کاربر اختصاصی جدید را فعال کنید؛ هر دو هم‌زمان مجاز نیستند."
+            )
+        if (
+            enabled and not (inbound_tags or pg_inbound_tags or xui_auto_client)
+            and (get_setting("xui_api_token") or get_setting("pasarguard_api_key"))
+        ):
+            raise ValueError(
+                "ابتدا یک Inbound موجود را برای Route انتخاب کنید؛ "
+                "ایجاد خودکار کاربر جدید تنها با انتخاب صریح گزینه مربوطه انجام می‌شود."
+            )
         country = TOR_COUNTRY_BY_CODE.get(country_code)
         if country is None:
             raise ValueError("کشور خروجی Tor معتبر نیست؛ یک کشور را از فهرست انتخاب کنید.")
@@ -865,7 +881,10 @@ def make_app() -> Flask:
         )
         if pg_conflicts:
             raise ValueError("Inbound پاسارگارد قبلاً Route شده است: " + _format_conflicts(pg_conflicts))
-        return name, country_code, gateway_port, xui_inbound_port, inbound_tags, pg_inbound_tags, enabled
+        return (
+            name, country_code, gateway_port, xui_inbound_port,
+            inbound_tags, pg_inbound_tags, enabled, xui_auto_client,
+        )
 
     @app.route("/locations/new", methods=["GET", "POST"])
     @login_required
@@ -873,7 +892,7 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled = validate_location_form()
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled, xui_auto_client = validate_location_form()
                 slug = f"{cc.lower()}-{secrets.token_hex(3)}"
                 transport_seed = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
                 create_location({
@@ -883,6 +902,7 @@ def make_app() -> Flask:
                     # The encrypted seed now derives VLESS/REALITY credentials.
                     "ss_method": "vless-reality", "ss_password": encrypt_secret(transport_seed),
                     "inbound_tags": inbound_tags, "enabled": enabled,
+                    "xui_auto_client": xui_auto_client,
                 })
                 set_pasarguard_tor_tags(slug, pg_tags)
             except (ValueError, sqlite3.IntegrityError) as exc:
@@ -923,10 +943,11 @@ def make_app() -> Flask:
         if request.method == "POST":
             validate_csrf(request.form.get("_csrf"))
             try:
-                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled = validate_location_form(location_id)
+                name, cc, gateway_port, xui_inbound_port, inbound_tags, pg_tags, enabled, xui_auto_client = validate_location_form(location_id)
                 update_location(location_id, {
                     **location, "name": name, "country_code": cc, "gateway_port": gateway_port,
-                    "xui_inbound_port": xui_inbound_port, "inbound_tags": inbound_tags, "enabled": enabled,
+                    "xui_inbound_port": xui_inbound_port, "inbound_tags": inbound_tags,
+                    "enabled": enabled, "xui_auto_client": xui_auto_client,
                 })
                 set_pasarguard_tor_tags(str(location["slug"]), pg_tags)
                 apply_runtime()
@@ -998,7 +1019,7 @@ def make_app() -> Flask:
         try:
             if launch_sync_job():
                 flash(
-                    "بازسازی و Sync در پس‌زمینه شروع شد؛ پنل هنگام انجام کار در دسترس می‌ماند.",
+                    "بازسازی و Sync در پس‌زمینه شروع شد؛ وضعیت عملیات در همین صفحه نمایش داده می‌شود.",
                     "success",
                 )
             else:

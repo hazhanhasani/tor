@@ -60,6 +60,38 @@ def service_active(slug: str) -> bool:
     return unit_active(f"tor-location@{slug}.service")
 
 
+def services_active(slugs: list[str]) -> dict[str, bool]:
+    """Resolve the entire location list with one systemctl call per batch.
+
+    The dashboard previously spawned one process per location (up to six
+    seconds each); during a sync this could make web requests look offline.
+    """
+    results = {slug: False for slug in slugs}
+    if not slugs:
+        return results
+    for offset in range(0, len(slugs), 64):
+        batch = slugs[offset:offset + 64]
+        units = [f"tor-location@{slug}.service" for slug in batch]
+        if any(not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit) for unit in units):
+            raise ValueError("Invalid service unit")
+        try:
+            check = subprocess.run(
+                ["systemctl", "is-active", "--", *units], text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=5, check=False,
+            )
+            statuses = check.stdout.splitlines()
+            if len(statuses) == len(batch):
+                results.update(
+                    {slug: status.strip() == "active"
+                     for slug, status in zip(batch, statuses)}
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            # Health info is supplementary; the panel must remain responsive.
+            continue
+    return results
+
+
 def journal_tail(unit: str, lines: int = 100) -> str:
     if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
         raise ValueError("Invalid systemd unit")

@@ -467,9 +467,8 @@ def _repair_existing_managed_payload(
     ]
     if len(current_clients) != len(current_settings["clients"]):
         raise XUIError("فهرست کاربران Inbound معتبر نیست؛ Sync بدون تغییر متوقف شد.")
-    for row in current_clients:
-        if row.get("id") and row.get("email") and not _is_tlm_generated_client(row):
-            row["flow"] = REALITY_FLOW
+    # Existing clients belong to the operator; their flow, UUID, quota,
+    # subscription ID and enabled state must never be rewritten by Sync.
     repaired["settings"] = copy.deepcopy(current_settings)
     repaired["settings"]["decryption"] = "none"
     repaired["settings"]["encryption"] = "none"
@@ -596,14 +595,34 @@ def _choose_inbound_port(location: dict[str, Any], options: list[dict[str, Any]]
     raise XUIError("هیچ پورت آزاد مناسبی برای Inbound مدیریت‌شده پیدا نشد.")
 
 
-def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
+def reconcile_managed_inbounds(
+    client: XUIClient, locations: list[dict[str, Any]], decrypt_password
+) -> dict[str, Any]:
     if client.settings.managed_inbound_mode == "cloudflare":
         return reconcile_cdn_inbound(client, locations, decrypt_password)
 
     options = client.list_inbounds()
-    # A normal Sync must never delete an inbound: existing clients and links
-    # may still depend on it, even after a location has been disabled.
-    created = updated = 0
+    existing_tags = {
+        str(row.get("tag") or "") for row in options
+        if str(row.get("tag") or "")
+    }
+    # Reject stale selections before adding or updating anything. Otherwise
+    # replacing the routing rules can silently detach every user on that tag.
+    requested_manual_tags = {
+        str(tag)
+        for loc in locations if loc.get("enabled")
+        for tag in (loc.get("inbound_tags") or [])
+        if tag
+    }
+    missing_tags = sorted(requested_manual_tags - existing_tags)
+    if missing_tags:
+        raise XUIError(
+            "Inboundهای انتخاب‌شده در 3x-ui پیدا نشدند؛ Sync بدون تغییر متوقف شد: "
+            + ", ".join(missing_tags)
+        )
+
+    created = updated = preserved = 0
+    warnings: list[str] = []
     managed_tags: list[str] = []
     for location in locations:
         if not location.get("enabled"):
@@ -612,10 +631,15 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
         existing = next((row for row in options if row.get("tag") == tag), None)
         manual_tags = [str(x) for x in (location.get("inbound_tags") or []) if x]
 
-        # When the operator selected existing 3x-ui inbounds, route those
-        # inbounds directly instead of adding another inbound and user.
-        if existing is None and manual_tags:
+        if manual_tags or not location.get("xui_auto_client", True):
+            # New locations explicitly reuse the selected live inbounds; no
+            # synthetic user is ever created unless the opt-in was checked.
+            # Keep any older generated inbound routed for live subscriptions.
+            if existing is not None:
+                managed_tags.append(tag)
+            preserved += len(manual_tags) + int(existing is not None)
             continue
+
         if existing is None:
             _choose_inbound_port(location, options, locations)
             expected = managed_inbound_payload(location, decrypt_password)
@@ -636,12 +660,28 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
         expected = _repair_existing_managed_payload(
             current, managed_inbound_payload(location, decrypt_password)
         )
-        if not _inbound_matches(current, expected):
-            client.update_inbound(int(existing["id"]), expected)
-            updated += 1
+        if _inbound_matches(current, expected):
+            continue
+
+        current_clients = _json_obj(current.get("settings")).get("clients") or []
+        if any(
+            not _is_tlm_generated_client(row) for row in current_clients
+        ):
+            # 3x-ui's update API treats settings.clients as replacement data.
+            # Never risk removing paid users to repair transport defaults.
+            preserved += 1
+            warnings.append(
+                f"{tag}: تنظیمات اینباند با کاربران موجود دست‌نخورده حفظ شد؛ "
+                "برای تغییر Transport، ابتدا پشتیبان بگیرید."
+            )
+            continue
+
+        client.update_inbound(int(existing["id"]), expected)
+        updated += 1
 
     return {
         "created": created, "updated": updated, "removed": 0,
+        "preserved": preserved, "warnings": warnings,
         "managed_tags": managed_tags,
     }
 
@@ -654,7 +694,8 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
                         warp_inbound_tags: list[str] | None = None,
                         managed_cdn_tag: str = CDN_MANAGED_TAG,
                         managed_inbound_tags: set[str] | None = None,
-                        preserved_legacy_tags: set[str] | None = None) -> dict[str, Any]:
+                        preserved_legacy_tags: set[str] | None = None,
+                        cdn_managed_emails: set[str] | None = None) -> dict[str, Any]:
     if not gateway_host:
         raise XUIError("Gateway host/IP is not configured")
     config = copy.deepcopy(original)
@@ -673,7 +714,10 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
 
     managed_rules: list[dict[str, Any]] = []
     warp_tags = list(dict.fromkeys(str(x) for x in (warp_inbound_tags or []) if x))
-    if warp_enabled and not warp_tags and xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
+    if (
+        warp_enabled and not warp_tags and managed_cdn_tag
+        and xui_settings and xui_settings.managed_inbound_mode == "cloudflare"
+    ):
         warp_tags = [managed_cdn_tag]
     if warp_enabled and warp_tags:
         warp_rule: dict[str, Any] = {
@@ -700,12 +744,21 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
         )
         manual_tags = list(dict.fromkeys(str(x) for x in (loc.get("inbound_tags") or []) if x))
         if xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
-            managed_rules.append({
-                "type": "field",
-                "inboundTag": [managed_cdn_tag],
-                "user": [managed_client_email(loc)],
-                "outboundTag": tag,
-            })
+            # Only route a synthetic CDN client if it was explicitly requested
+            # or existed already. Reusing a manually selected inbound must
+            # never create a replacement client per new location.
+            email = managed_client_email(loc)
+            has_cdn_client = (
+                (cdn_managed_emails is None and loc.get("xui_auto_client", True))
+                or (cdn_managed_emails is not None and email in cdn_managed_emails)
+            )
+            if has_cdn_client and managed_cdn_tag:
+                managed_rules.append({
+                    "type": "field",
+                    "inboundTag": [managed_cdn_tag],
+                    "user": [email],
+                    "outboundTag": tag,
+                })
             legacy_tag = managed_inbound_tag(loc)
             legacy_tags = (
                 [legacy_tag] if preserved_legacy_tags and legacy_tag in preserved_legacy_tags else []
@@ -751,8 +804,29 @@ def sync_locations(
         raise XUIError("3x-ui URL/API token is not configured")
     client = XUIClient(settings)
     previous_cdn_tag = get_setting("xui_cdn_runtime_tag", "") or ""
+    # Validate the operator's exact manual selection before altering inbounds
+    # or Xray. A stale tag must never silently fall back to a new user.
+    requested_manual_tags = {
+        str(tag)
+        for loc in locations if loc.get("enabled")
+        for tag in (loc.get("inbound_tags") or []) if tag
+    }
+    if requested_manual_tags:
+        available = {
+            str(row.get("tag") or "")
+            for row in client.list_inbounds()
+        }
+        missing = sorted(requested_manual_tags - available)
+        if missing:
+            raise XUIError(
+                "Inboundهای انتخاب‌شده موجود نیستند؛ Sync بدون تغییر متوقف شد: "
+                + ", ".join(missing)
+            )
     inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
-    managed_cdn_tag = str(inbound_stats.get("cdn_inbound_tag") or CDN_MANAGED_TAG)
+    # An empty tag means a manual-only location without a shared CDN inbound.
+    # Do not silently substitute a nonexistent torloc-cdn tag.
+    raw_cdn_tag = inbound_stats.get("cdn_inbound_tag")
+    managed_cdn_tag = CDN_MANAGED_TAG if raw_cdn_tag is None else str(raw_cdn_tag)
     if settings.managed_inbound_mode == "cloudflare":
         set_setting("xui_cdn_runtime_tag", managed_cdn_tag)
         cdn_port = int(inbound_stats.get("cdn_port") or settings.cdn_port)
@@ -786,7 +860,7 @@ def sync_locations(
                 value = managed_cdn_tag
             if value and value not in normalized_tags:
                 normalized_tags.append(value)
-        if warp_enabled and not normalized_tags:
+        if warp_enabled and not normalized_tags and managed_cdn_tag:
             normalized_tags = [managed_cdn_tag]
         warp_inbound_tags = normalized_tags
         set_setting(
@@ -808,6 +882,7 @@ def sync_locations(
         managed_cdn_tag=managed_cdn_tag,
         managed_inbound_tags=set(inbound_stats.get("managed_tags") or []),
         preserved_legacy_tags=set(inbound_stats.get("preserved_legacy_tags") or []),
+        cdn_managed_emails=set(inbound_stats.get("cdn_managed_emails") or []),
     )
     # One Xray settings update for Tor, WARP and tunnel routes combined.
     if tunnel_links is not None:

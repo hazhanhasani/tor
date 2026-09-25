@@ -136,6 +136,14 @@
         gatewayPort.setCustomValidity('');
         return false;
       }
+      const createClient = wizard.querySelector('input[name="xui_auto_client"]');
+      const selectedInbounds = [...wizard.querySelectorAll('input[name="inbound_tags"]:checked')];
+      if (createClient?.checked && selectedInbounds.length) {
+        createClient.setCustomValidity('یا Inbound موجود انتخاب کنید یا کاربر جدید بسازید، نه هر دو.');
+        createClient.reportValidity();
+        createClient.setCustomValidity('');
+        return false;
+      }
       return true;
     };
 
@@ -144,10 +152,15 @@
       const text = (name, fallback = 'خودکار') => get(name)?.value?.trim() || fallback;
       const countryField = get('country_code');
       const countryLabel = countryField?.selectedOptions?.[0]?.textContent?.trim() || '—';
+      const auto = get('xui_auto_client')?.checked || false;
+      const selectedInbounds = wizard.querySelectorAll('input[name="inbound_tags"]:checked').length;
+      const clientPolicy = auto ? 'ساخت کاربر جدید با تأیید صریح'
+        : selectedInbounds ? 'استفاده از کاربران موجود؛ بدون ساخت کاربر'
+        : 'بدون Inbound انتخابی 3x-ui';
       const rows = {
         '[data-review-name]': text('name', '—'),
         '[data-review-country]': countryLabel,
-        '[data-review-inbound]': text('xui_inbound_port'),
+        '[data-review-inbound]': clientPolicy,
         '[data-review-gateway]': text('gateway_port', '—'),
         '[data-review-state]': get('enabled')?.checked ? 'فعال' : 'غیرفعال',
       };

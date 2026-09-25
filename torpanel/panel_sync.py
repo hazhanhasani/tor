@@ -102,9 +102,20 @@ def sync_all_panels(locations: list[dict[str, Any]], decrypt_password) -> dict[s
     result: dict[str, dict[str, Any]] = {}
     if xui_configured():
         try:
-            tor_stats = sync_locations(locations, decrypt_password)
-            tunnel_stats = sync_xui_hybrid()
-            result["xui"] = {"ok": True, **tor_stats, **tunnel_stats}
+            # Build Tor, WARP and tunnel routes together and update Xray once.
+            links = list_tunnel_links()
+            tor_stats = sync_locations(
+                locations, decrypt_password, tunnel_links=links
+            )
+            result["xui"] = {
+                "ok": True,
+                **tor_stats,
+                "tunnel_routes": sum(
+                    1 for link in links
+                    if tunnel_panel_tags(str(link.get("uuid") or ""), "xui")
+                ),
+                "tunnel_xray_updated": tor_stats.get("xray_updated", 0),
+            }
         except Exception as exc:
             result["xui"] = {"ok": False, "error": str(exc)}
     else:

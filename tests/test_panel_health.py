@@ -10,7 +10,7 @@ def test_bulk_health_checks_single_call_for_many_locations(monkeypatch):
         calls.append(args)
         assert kwargs["timeout"] == 5
         statuses = ["active" if i % 2 == 0 else "inactive"
-                    for i in range(len(args) - 4)]
+                    for i in range(len(args) - 3)]
         return SimpleNamespace(stdout="\n".join(statuses) + "\n", returncode=3)
 
     monkeypatch.setattr(runtime.subprocess, "run", fake_run)

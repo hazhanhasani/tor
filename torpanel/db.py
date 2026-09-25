@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS locations (
     ss_password TEXT NOT NULL,
     inbound_tags TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
+    xui_auto_client INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -89,6 +90,10 @@ def _migrate(db: sqlite3.Connection) -> None:
     columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(locations)").fetchall()}
     if "xui_inbound_port" not in columns:
         db.execute("ALTER TABLE locations ADD COLUMN xui_inbound_port INTEGER NOT NULL DEFAULT 0")
+    # Existing deployments retain their previous auto-inbound behavior until
+    # edited. Only NEW locations default to reusing selected live inbounds.
+    if "xui_auto_client" not in columns:
+        db.execute("ALTER TABLE locations ADD COLUMN xui_auto_client INTEGER NOT NULL DEFAULT 1")
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_xui_inbound_port "
         "ON locations(xui_inbound_port) WHERE xui_inbound_port > 0"
@@ -188,6 +193,7 @@ def _row_to_location(row: sqlite3.Row) -> dict[str, Any]:
         obj["inbound_tags"] = []
     obj["enabled"] = bool(obj.get("enabled"))
     obj["xui_inbound_port"] = int(obj.get("xui_inbound_port") or 0)
+    obj["xui_auto_client"] = bool(obj.get("xui_auto_client", 1))
     return obj
 
 
@@ -216,14 +222,15 @@ def create_location(data: dict[str, Any]) -> int:
     with connect() as db:
         cur = db.execute(
             """INSERT INTO locations
-            (slug,name,country_code,socks_port,gateway_port,xui_inbound_port,ss_method,ss_password,inbound_tags,enabled,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (slug,name,country_code,socks_port,gateway_port,xui_inbound_port,ss_method,ss_password,inbound_tags,enabled,xui_auto_client,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["slug"], data["name"], data["country_code"], int(data["socks_port"]),
                 int(data["gateway_port"]), int(data.get("xui_inbound_port") or 0),
                 data["ss_method"], data["ss_password"],
                 json.dumps(data.get("inbound_tags", []), ensure_ascii=False),
-                1 if data.get("enabled", True) else 0, now, now,
+                1 if data.get("enabled", True) else 0,
+                1 if data.get("xui_auto_client", False) else 0, now, now,
             ),
         )
         return int(cur.lastrowid)
@@ -235,13 +242,14 @@ def update_location(location_id: int, data: dict[str, Any]) -> None:
         db.execute(
             """UPDATE locations SET
             name=?, country_code=?, socks_port=?, gateway_port=?, xui_inbound_port=?, ss_method=?,
-            ss_password=?, inbound_tags=?, enabled=?, updated_at=? WHERE id=?""",
+            ss_password=?, inbound_tags=?, enabled=?, xui_auto_client=?, updated_at=? WHERE id=?""",
             (
                 data["name"], data["country_code"], int(data["socks_port"]),
                 int(data["gateway_port"]), int(data.get("xui_inbound_port") or 0),
                 data["ss_method"], data["ss_password"],
                 json.dumps(data.get("inbound_tags", []), ensure_ascii=False),
-                1 if data.get("enabled", True) else 0, now, location_id,
+                1 if data.get("enabled", True) else 0,
+                1 if data.get("xui_auto_client", True) else 0, now, location_id,
             ),
         )
 

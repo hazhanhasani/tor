@@ -506,7 +506,6 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
         raise CDNProfileError("Inbound مدیریت‌شده CDN شناسه معتبر ندارد؛ حذف خودکار انجام نشد.")
     existing_tag = str((existing or {}).get("tag") or CDN_MANAGED_TAG)
     original_port = client.settings.cdn_port
-    cert_files = client.get_web_cert_files()
     blocked_ports: set[int] = set()
     ignored_ids = {existing_id} if existing_id is not None else set()
     current = client.get_inbound(existing_id) if existing_id is not None else None
@@ -539,6 +538,7 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
             ],
         }
 
+    cert_files = client.get_web_cert_files()
     try:
         while True:
             candidate = _pick_free_cdn_port(

@@ -607,3 +607,97 @@ def test_no_enabled_locations_disables_generated_clients_without_deleting_inboun
     }
     assert not by_email[managed_client_email(loc)]["enable"]
     assert by_email["manual@example.com"]["enable"]
+
+
+def test_new_manual_location_does_not_create_cdn_client_or_inbound():
+    settings = cdn_settings()
+    loc = location("fr-manual", "France", "FR", 31010)
+    loc["xui_auto_client"] = False
+    loc["inbound_tags"] = ["existing-vless"]
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [{"id": 10, "tag": "existing-vless", "port": 10005}]
+        def get_web_cert_files(self):
+            raise AssertionError("CDN certificate is not needed for a manual route")
+        def add_inbound(self, payload):
+            raise AssertionError("Manual location must not create an inbound")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Manual location must not rewrite clients")
+
+    result = reconcile_cdn_inbound(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["cdn_managed_emails"] == []
+    assert result["cdn_inbound_tag"] == ""
+
+    routed = build_synced_config(
+        {"outbounds": [], "routing": {"rules": []}}, [loc], "127.0.0.1",
+        fake_decrypt, settings, cdn_managed_emails=set(),
+        managed_cdn_tag=result["cdn_inbound_tag"],
+    )
+    assert len(routed["routing"]["rules"]) == 1
+    assert routed["routing"]["rules"][0]["inboundTag"] == ["existing-vless"]
+    assert "user" not in routed["routing"]["rules"][0]
+
+
+def test_manual_location_does_not_add_user_to_existing_shared_cdn():
+    settings = cdn_settings()
+    old = location()
+    new = location("fr-manual", "France", "FR", 31002)
+    new["xui_auto_client"] = False
+    new["inbound_tags"] = ["existing-vless"]
+    certs = {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+    current = build_cdn_inbound_payload([old], settings, certs, fake_decrypt)
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [
+                {"id": 1, "tag": CDN_MANAGED_TAG, "remark": CDN_MANAGED_REMARK,
+                 "port": settings.cdn_port},
+                {"id": 10, "tag": "existing-vless", "port": 10005},
+            ]
+        def get_inbound(self, inbound_id):
+            return current
+        def get_web_cert_files(self):
+            return certs
+        def add_inbound(self, payload):
+            raise AssertionError("CDN inbound is already present")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Adding manual location must not add CDN client")
+
+    result = reconcile_cdn_inbound(Client(), [old, new], fake_decrypt)
+    assert result["created"] == result["updated"] == result["removed"] == 0
+    assert result["cdn_managed_emails"] == [managed_client_email(old)]
+    assert managed_client_email(new) not in result["cdn_managed_emails"]
+
+
+def test_existing_shared_cdn_is_not_rewritten_for_manual_only_locations():
+    settings = cdn_settings()
+    manual = location()
+    manual["xui_auto_client"] = False
+    manual["inbound_tags"] = ["existing-vless"]
+    class Client:
+        def __init__(self):
+            self.settings = settings
+        def list_inbounds(self):
+            return [
+                {"id": 1, "tag": CDN_MANAGED_TAG,
+                 "remark": CDN_MANAGED_REMARK, "port": settings.cdn_port},
+                {"id": 10, "tag": "existing-vless", "port": 10005},
+            ]
+        def get_inbound(self, inbound_id):
+            return {"settings": {"clients": [
+                {"id": "old", "email": "real@example.com", "enable": True}
+            ]}}
+        def get_web_cert_files(self):
+            raise AssertionError("No TLS read for unchanged manual-only route")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Shared CDN must remain untouched")
+
+    result = reconcile_cdn_inbound(Client(), [manual], fake_decrypt)
+    assert result["updated"] == result["created"] == 0
+    assert result["cdn_managed_emails"] == []

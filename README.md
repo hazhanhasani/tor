@@ -58,7 +58,7 @@ Germany Tor exit
 - نگهداری تنظیمات موجود Xray؛ فقط tagهای با پیشوند `torloc-` مدیریت می‌شوند
 - جلوگیری از اختصاص هم‌زمان یک inbound به دو Location
 - Block کردن UDP روی مسیر Tor برای جلوگیری از مسیر خروجی غیرمنتظره
-- تست IP و کشور واقعی خروجی Tor از داخل Web Panel
+- آزمایش IP تخمینی خروجی و دانلود واقعی Tor در پس‌زمینه
 - systemd service و auto-start
 - رمزگذاری API Token و seed اختصاصی VLESS/REALITY در دیتابیس با Fernet
 - CSRF protection و session login
@@ -356,3 +356,41 @@ Endpoint در دسترس نباشد، تست اتصال با API فهرست Inbo
 دکمه «بازسازی و Sync» دیگر عملیات سنگین را داخل request وب اجرا نمی‌کند. Job در
 پس‌زمینه اجرا می‌شود و UI وضعیت آن را poll می‌کند. همچنین Xray config فقط وقتی
 واقعاً تغییر کرده باشد به 3x-ui ارسال می‌شود تا restart/reload بی‌دلیل حذف شود.
+
+## v1.13.0: سنجش واقعی و بهبود قابلیت اطمینان
+
+**سنجش سرعت غیرهم‌زمان:** از دکمه «سنجش سرعت واقعی» در صفحه
+لوکیشن‌ها استفاده کنید. برنامه از SOCKS5h داخلی همان لوکیشن IP تخمینی
+خروجی و زمان اتصال را بررسی می‌کند و حداکثر ۲۵۶ KiB از HTTPS ثابت
+دانلود می‌کند. در صورت مسدودکردن خروجی Tor توسط مقصد اول، مقصد ثابت
+دیگری امتحان می‌شود. آزمایش هیچ Inbound، کاربر، مدار یا پیکربندی
+Tor را تغییر نمی‌دهد و پنل در طول آن در دسترس می‌ماند.
+
+**پروفایل Xray با DoH:** در صفحه «خروجی Xray + DoH» لینک
+VLESS + REALITY TCP موجود را وارد کنید. خروجی JSON استاندارد
+Xray با DNS-over-HTTPS از طریق مسیر VLESS، محافظت در برابر
+مسیر مستقیم ناخواسته و مسدودسازی UDP غیر از DNS داخلی دریافت می‌شود.
+پیش‌فرض خروجی همواره proxy است؛ only local/private routes are direct.
+برای برنامه‌های SOCKS حتماً **Remote DNS / SOCKS5h** را انتخاب کنید.
+این سازنده لینک را ذخیره نمی‌کند و خروجی حاوی UUID حساس اشتراک است.
+
+**راه‌اندازی مجدد کمتر:** Sync بدون تغییر دیگر روی لوکیشن‌های فعال،
+دستورهای مکرر systemd enable/restart اجرا نمی‌کند. با خاموش یا حذف کردن
+لوکیشن، Tor DataDirectory و guard state عمداً حفظ می‌شوند؛ پاکسازی
+اطلاعات باید به‌صورت دستی و پس از نسخه پشتیبان انجام شود.
+
+**محدودیت شبکه Tor:** پینگ VLESS اندازه‌گیری مسیر کامل Tor نیست.
+`ExitNodes {CC}` و `StrictNodes 1` برای حفظ کشور خروجی باقی
+مانده‌اند؛ در کشورهای با رله کم می‌توانند محدودیت سرعت ایجاد کنند.
+هیچ تضمینی برای سرعت خاص، کشور GeoIP یکسان در تمام وب‌سایت‌ها
+یا عدم قطعی هنگام تغییر واقعی تنظیمات ارائه نمی‌شود.
+
+**مراجع تحقیق:**
+- [Tor Metrics / bandwidth](https://metrics.torproject.org/bandwidth.html)
+- [Tor circuit and guard selection](https://spec.torproject.org/guard-spec/guard-selection/index.html)
+- [Tor SOCKS and remote DNS](https://spec.torproject.org/socks-extensions)
+- [Xray DNS and DoH](https://github.com/XTLS/Xray-docs-next/blob/main/docs/en/config/dns.md)
+
+قبل از ارتقا از دیتابیس پنل، کاربران 3x-ui و پوشه Tor DataDirectory
+نسخه پشتیبان تهیه کنید. تست CI روی سرور واقعی یا وضعیت مسیریابی اپراتور
+اجرا نمی‌شود.

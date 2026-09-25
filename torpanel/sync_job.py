@@ -49,6 +49,18 @@ def _prepare_log() -> None:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def launch_sync_job() -> bool:
     """Start one detached worker and return immediately to the web request."""
     BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -57,6 +69,15 @@ def launch_sync_job() -> bool:
         try:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            return False
+
+        previous = sync_job_state()
+        if (
+            previous.get("status") in {"queued", "running"}
+            and _pid_alive(int(previous.get("pid") or 0))
+        ):
+            # The launcher lock lasts only until the child is started. Check
+            # its saved PID too, so a second click cannot queue another worker.
             return False
 
         job_id = uuid.uuid4().hex
@@ -122,7 +143,11 @@ def run_sync_job(job_id: str) -> int:
             except OSError:
                 pass
             print(f"[{_now()}] sync job {job_id} started", flush=True)
+            state["message"] = "در حال بررسی و اعمال تغییرات Tor…"
+            _write_state(state)
             apply_runtime()
+            state["message"] = "در حال همگام‌سازی امن مسیرهای پنل‌ها…"
+            _write_state(state)
             results = sync_all_panels(list_locations(), decrypt_secret)
             failed = {
                 key: str(row.get("error") or "خطای نامشخص")

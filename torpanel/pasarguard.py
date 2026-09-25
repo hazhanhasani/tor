@@ -279,8 +279,12 @@ def sync_pasarguard(locations: list[dict[str, Any]], decrypt_password) -> dict[s
         gateway_host=settings.gateway_host,
         decrypt_password=decrypt_password,
     )
-    client.update_core(core, updated)
+    # Avoid a full PasarGuard node restart when routes have not changed.
+    core_updated = updated != core["config"]
+    if core_updated:
+        client.update_core(core, updated)
     return {
+        "core_updated": 1 if core_updated else 0,
         "core_id": int(core["id"]),
         "tor_routes": sum(1 for loc in locations if pasarguard_tor_tags(str(loc.get("slug") or ""))),
         "tunnel_routes": sum(1 for link in list_tunnel_links() if tunnel_panel_tags(str(link.get("uuid") or ""), "pasarguard")),

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}تحلیل سرعت {{ location.name }} | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">TOR EGRESS DIAGNOSTICS</div><h1>تحلیل سرعت واقعی {{ location.name }}</h1><p>خروجی {{ location.country_code }} · بدون تغییر کاربران، Inbound یا مدار Tor</p></div>
+  <div class="page-actions"><a class="button" href="{{ url_for('index') }}">بازگشت</a></div>
+</section>
+
+<div class="panel stack" {% if diagnostic.status in ('queued', 'running') %}data-diagnostic-refresh{% endif %}>
+  <h2>وضعیت: {{ diagnostic.status or 'هنوز آزمایش نشده' }}</h2>
+  <p>{{ diagnostic.message or 'زمان اتصال و دانلود از داخل SOCKS داخلی Tor را اندازه‌گیری کنید؛ پینگ برنامه، سرعت دانلود را نشان نمی‌دهد.' }}</p>
+  {% if diagnostic.started_at %}<p class="muted">شروع: {{ diagnostic.started_at }}{% if diagnostic.finished_at %} · پایان: {{ diagnostic.finished_at }}{% endif %}</p>{% endif %}
+
+  {% set report = diagnostic.report or {} %}
+  {% if report %}
+  <div class="stats-grid">
+    <div class="stat-card"><div class="label">SOCKS داخلی</div><div class="value">{{ 'آماده' if report.socks_ready else 'در دسترس نیست' }}</div></div>
+    <div class="stat-card"><div class="label">کشور IP گزارش‌شده</div><div class="value">{{ (report.exit or {}).get('country_code') or 'نامشخص' }}</div></div>
+    <div class="stat-card"><div class="label">زمان بررسی خروجی</div><div class="value">{{ (report.exit or {}).get('seconds', '—') }} s</div></div>
+    <div class="stat-card"><div class="label">سرعت دانلود واقعی</div><div class="value">{{ (report.speed or {}).get('kib_per_second', '—') }} KiB/s</div></div>
+  </div>
+  {% if report.exit %}
+    <p>IP خروجی گزارش‌شده: <code>{{ report.exit.ip }}</code> · منبع: {{ report.exit.provider }}. پایگاه‌های GeoIP ممکن است درباره کشور یک IP اختلاف داشته باشند.</p>
+  {% endif %}
+  {% if report.speed %}
+    <p>دانلود {{ report.speed.bytes }} بایت از {{ report.speed.endpoint }} در {{ report.speed.seconds }} ثانیه؛ دریافت اولین داده {{ report.speed.first_byte_seconds }} ثانیه.</p>
+  {% endif %}
+  {% if report.errors %}
+    <div class="callout warning"><strong>خطاهای آزمایش</strong><p>{{ report.errors|join(' · ') }}</p></div>
+  {% endif %}
+  {% endif %}
+  <div class="callout info">
+    سرعت محدود به مدار، گارد، خروجی کشور انتخابی و محدودیت مقصد است. این آزمایش فقط ۲۵۶ کیلوبایت دانلود می‌کند و در صورت خطای یک ارائه‌دهنده، مقصد ثابت دیگری را امتحان می‌کند.
+  </div>
+  <form method="post" action="{{ url_for('location_test', location_id=location.id) }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <button class="button primary" type="submit">{{ icon('pulse') }} اجرای مجدد آزمایش</button>
+  </form>
+</div>
+{% endblock %}

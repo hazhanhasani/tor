@@ -185,6 +185,11 @@
     showStep(0);
   }
 
+  if (document.querySelector('[data-diagnostic-refresh]')) {
+    // The speed probe runs in its own worker and cannot block Flask.
+    setTimeout(() => window.location.reload(), 6000);
+  }
+
   const logAutoRefresh = document.querySelector('[data-log-auto-refresh]');
   if (logAutoRefresh) {
     let timer = null;

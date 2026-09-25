@@ -209,12 +209,53 @@ def gateway_config(locations: list[dict]) -> dict:
             "routing": {"domainStrategy": "AsIs", "rules": rules}}
 
 
-def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=check)
+def run(
+    *args: str, check: bool = True, timeout: float | None = 30
+) -> subprocess.CompletedProcess:
+    # A hung systemctl command must not freeze the background Sync indefinitely.
+    return subprocess.run(
+        args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=check, timeout=timeout,
+    )
 
 
 def service_active(unit: str) -> bool:
-    return run("systemctl", "is-active", "--quiet", unit, check=False).returncode == 0
+    try:
+        return run(
+            "systemctl", "is-active", "--quiet", unit,
+            check=False, timeout=4,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Unknown state must not trigger a disruptive restart of a live node.
+        raise RuntimeError(f"Cannot inspect systemd unit {unit}: {type(exc).__name__}") from exc
+
+
+def services_active(units: list[str]) -> dict[str, bool]:
+    """Check service health in batches without a subprocess per location."""
+    states: dict[str, bool] = {}
+    for offset in range(0, len(units), 64):
+        batch = units[offset:offset + 64]
+        try:
+            response = run(
+                "systemctl", "is-active", "--", *batch, check=False, timeout=6,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                "Cannot inspect Tor services; refusing blind restarts"
+            ) from exc
+        statuses = response.stdout.splitlines()
+        if len(statuses) != len(batch) or any(
+            status.strip() not in {
+                "active", "inactive", "failed", "activating", "deactivating",
+                "reloading", "unknown"
+            } for status in statuses
+        ):
+            raise RuntimeError(
+                "systemctl returned incomplete service states; refusing blind restarts"
+            )
+        for unit, status in zip(batch, statuses):
+            states[unit] = status.strip() == "active"
+    return states
 
 
 def ensure_owner(path: Path, username: str) -> None:
@@ -778,7 +819,9 @@ def apply() -> None:
     for slug in sorted(existing - desired):
         run("systemctl", "disable", "--now", f"tor-location@{slug}.service", check=False)
         shutil.rmtree(INSTANCE_DIR / slug, ignore_errors=True)
-        shutil.rmtree(TOR_DATA_DIR / slug, ignore_errors=True)
+        # Do not erase DataDirectory on disable/delete. It contains guard
+        # state and cached consensus, and re-creating it delays bootstrap and
+        # changes long-lived guards. Manual purge is a separate operation.
         removed_any = True
 
     changed_tor: set[str] = set()
@@ -793,7 +836,6 @@ def apply() -> None:
         if atomic_write(torrc_path, torrc_for(loc, tunnel_source_ip), 0o640):
             changed_tor.add(slug)
         ensure_group(torrc_path, "debian-tor")
-        run("systemctl", "enable", f"tor-location@{slug}.service", check=False)
 
     config = gateway_config(locations)
     encoded = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
@@ -814,13 +856,24 @@ def apply() -> None:
 
     if removed_any:
         run("systemctl", "daemon-reload", check=False)
-    for loc in locations:
-        unit = f"tor-location@{loc['slug']}.service"
-        if loc["slug"] in changed_tor or not service_active(unit):
-            run("systemctl", "restart", unit)
+    # Bounded systemd checks and one batched enable command: unchanged
+    # locations are never restarted and keep their circuits/guard state.
+    units = [
+        f"tor-location@{loc['slug']}.service" for loc in locations
+    ]
+    active_states = services_active(units)
+    to_restart = [
+        unit for loc, unit in zip(locations, units)
+        if loc["slug"] in changed_tor or not active_states[unit]
+    ]
+    if to_restart:
+        run("systemctl", "enable", *to_restart, check=False)
+    for unit in to_restart:
+        run("systemctl", "restart", unit)
     if locations:
-        run("systemctl", "enable", "tor-location-gateway.service", check=False)
-        if gateway_changed or not service_active("tor-location-gateway.service"):
+        gateway_running = service_active("tor-location-gateway.service")
+        if gateway_changed or not gateway_running:
+            run("systemctl", "enable", "tor-location-gateway.service", check=False)
             run("systemctl", "restart", "tor-location-gateway.service")
     else:
         run("systemctl", "disable", "--now", "tor-location-gateway.service", check=False)

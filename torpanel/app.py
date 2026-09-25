@@ -7,10 +7,12 @@ import secrets
 import sqlite3
 from functools import wraps
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
+from .client_profiles import ClientProfileError, profile_json
 from .countries import TOR_COUNTRIES, TOR_COUNTRY_BY_CODE
+from .diagnostics import diagnostic_state, launch_diagnostic_job
 from .config import (
     ADMIN_PASSWORD_HASH,
     ADMIN_USERNAME,
@@ -989,23 +991,48 @@ def make_app() -> Flask:
     @app.post("/locations/<int:location_id>/test")
     @login_required
     def location_test(location_id: int):
+        """Start the complete download/exit test without blocking Flask."""
         validate_csrf(request.form.get("_csrf"))
-        location = get_location(location_id)
-        if not location:
+        if get_location(location_id) is None:
             return ("Not found", 404)
         try:
-            result = test_exit(location)
-            actual = (result.get("country_code") or "?").upper()
-            expected = location["country_code"].upper()
-            ip = result.get("ip") or "?"
-            city = result.get("city") or ""
-            if actual == expected:
-                flash(f"خروجی Tor صحیح است: {actual} — {ip} {city}", "success")
+            if launch_diagnostic_job(location_id):
+                flash("آزمایش دانلود واقعی Tor در پس‌زمینه شروع شد.", "success")
             else:
-                flash(f"خروجی فعلی {actual} — {ip} است؛ کشور مورد انتظار {expected} بود.", "warning")
-        except Exception as exc:
+                flash("آزمایش قبلی این لوکیشن هنوز در حال اجراست.", "warning")
+        except (OSError, ValueError) as exc:
+            flash(f"شروع آزمایش ناموفق بود: {exc}", "danger")
+        return redirect(url_for("location_diagnostic", location_id=location_id))
+
+    @app.get("/locations/<int:location_id>/diagnostic")
+    @login_required
+    def location_diagnostic(location_id: int):
+        location = get_location(location_id)
+        if location is None:
+            return ("Not found", 404)
+        return render_template(
+            "diagnostic.html",
+            location=location,
+            diagnostic=diagnostic_state(location_id),
+        )
+
+    @app.route("/tools/client-profile", methods=["GET", "POST"])
+    @login_required
+    def client_profile_tool():
+        if request.method == "GET":
+            return render_template("client_profile.html")
+        validate_csrf(request.form.get("_csrf"))
+        try:
+            content = profile_json(request.form.get("vless_uri") or "")
+        except ClientProfileError as exc:
             flash(str(exc), "danger")
-        return redirect(url_for("index"))
+            return render_template("client_profile.html"), 400
+        response = Response(content, mimetype="application/json; charset=utf-8")
+        response.headers["Content-Disposition"] = (
+            'attachment; filename="tor-xray-doh.json"'
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/sync/status")
     @login_required

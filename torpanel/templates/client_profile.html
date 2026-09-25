@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from 'components/icons.html' import icon %}
+{% block title %}پروفایل امن Xray | Tor Location Manager{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">CLIENT PROFILE BUILDER</div><h1>پروفایل بهینه Xray</h1><p>تبدیل کانفیگ VLESS + REALITY TCP به JSON با DNS-over-HTTPS و جلوگیری از نشت UDP</p></div>
+  <div class="page-actions"><a class="button" href="{{ url_for('index') }}">بازگشت</a></div>
+</section>
+<div class="panel stack">
+  <form method="post" action="{{ url_for('client_profile_tool') }}" class="stack" autocomplete="off">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label class="field"><span>لینک VLESS + REALITY</span>
+      <textarea name="vless_uri" rows="6" maxlength="4096" required spellcheck="false" class="mono" placeholder="vless://uuid@server:port?security=reality&..."></textarea>
+      <small>فقط در همین درخواست پردازش می‌شود؛ لینک و کلید عمومی در تنظیمات پنل ثبت نمی‌شوند.</small>
+    </label>
+    <button class="button primary" type="submit">{{ icon('download') }} دریافت JSON اختصاصی Xray</button>
+  </form>
+  <div class="callout info">
+    این فایل برای کلاینت‌های سازگار با Xray است، نه برای جایگزینی تنظیمات اصلی سرور 3x-ui. DNS با DoH از طریق همان اتصال VLESS عبور می‌کند؛ UDP غیر از درخواست‌های DNS داخلی مسدود می‌شود. برای جلوگیری از DNS leak کلاینت، Proxy برنامه‌ها را روی SOCKS5 با Remote DNS تنظیم کنید.
+  </div>
+  <div class="callout warning">
+    این تنظیمات محدودیت سرعت مدارهای Tor را از بین نمی‌برد. فقط مشکلات محتمل DNS/QUIC و مسیرهای مستقیم ناخواسته در JSON پیشین را حذف می‌کند. فایل خروجی حاوی UUID اشتراک شماست؛ آن را منتشر نکنید.
+  </div>
+</div>
+{% endblock %}

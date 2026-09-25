@@ -452,6 +452,21 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
         if existing_port in CLOUDFLARE_HTTPS_PORTS:
             desired_port = existing_port
 
+    if enabled and existing is None and not any(
+        loc.get("xui_auto_client", True) for loc in enabled
+    ):
+        # All new locations reuse selected existing inbounds. Neither
+        # provision a shared CDN inbound nor generate per-location clients.
+        return {
+            "created": 0, "updated": 0, "removed": 0,
+            "cdn_clients": 0, "cdn_inbound_tag": "", "cdn_port": desired_port,
+            "cdn_managed_emails": [],
+            "preserved_legacy_tags": [
+                str(row.get("tag") or "") for row in options
+                if str(row.get("tag") or "").startswith(LEGACY_MANAGED_PREFIX)
+            ],
+        }
+
     if not enabled:
         # Never delete the shared inbound: it may also contain real operator
         # clients. Disable only synthetic clients for inactive locations.
@@ -477,11 +492,13 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
                 "created": 0, "updated": changed, "removed": 0,
                 "cdn_clients": 0, "cdn_inbound_tag": str(existing.get("tag") or ""),
                 "cdn_port": desired_port, "preserved_legacy_tags": [],
+                "cdn_managed_emails": [],
             }
         return {
             "created": 0, "updated": 0, "removed": 0,
             "cdn_clients": 0, "cdn_inbound_tag": "",
             "cdn_port": desired_port, "preserved_legacy_tags": [],
+            "cdn_managed_emails": [],
         }
 
     existing_id = _row_id(existing) if existing else None
@@ -493,6 +510,34 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
     blocked_ports: set[int] = set()
     ignored_ids = {existing_id} if existing_id is not None else set()
     current = client.get_inbound(existing_id) if existing_id is not None else None
+    old_clients = _obj(current.get("settings")).get("clients") if current is not None else []
+    if not isinstance(old_clients, list) or not all(isinstance(row, dict) for row in old_clients):
+        raise CDNProfileError(
+            "پاسخ 3x-ui شامل فهرست کامل کاربران CDN نیست؛ Sync برای جلوگیری از حذف متوقف شد."
+        )
+    old_managed_emails = {
+        str(row.get("email") or "").strip().lower()
+        for row in old_clients if _is_managed_location_client(row)
+    }
+    # Maintain previously issued CDN subscriptions without changing their
+    # identity. A new location must opt in before getting a new client.
+    managed_enabled = [
+        loc for loc in enabled
+        if loc.get("xui_auto_client", True)
+        or managed_client_email(loc) in old_managed_emails
+    ]
+    managed_emails = [managed_client_email(loc) for loc in managed_enabled]
+    if not managed_enabled:
+        return {
+            "created": 0, "updated": 0, "removed": 0,
+            "cdn_clients": 0,
+            "cdn_inbound_tag": existing_tag if existing else "",
+            "cdn_port": desired_port, "cdn_managed_emails": [],
+            "preserved_legacy_tags": [
+                str(row.get("tag") or "") for row in options
+                if str(row.get("tag") or "").startswith(LEGACY_MANAGED_PREFIX)
+            ],
+        }
 
     try:
         while True:
@@ -502,7 +547,7 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
             )
             client.settings.cdn_port = candidate
             expected = build_cdn_inbound_payload(
-                enabled, client.settings, cert_files, decrypt_password
+                managed_enabled, client.settings, cert_files, decrypt_password
             )
             if existing is not None:
                 expected["tag"] = existing_tag
@@ -565,8 +610,9 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
     ]
     return {
         "created": created, "updated": updated, "removed": 0,
-        "cdn_clients": len(enabled), "cdn_inbound_tag": actual_tag,
+        "cdn_clients": len(managed_enabled), "cdn_inbound_tag": actual_tag,
         "cdn_port": client.settings.cdn_port,
+        "cdn_managed_emails": managed_emails,
         "preserved_legacy_tags": retained_legacy_tags,
     }
 

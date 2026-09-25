@@ -701,3 +701,57 @@ def test_existing_shared_cdn_is_not_rewritten_for_manual_only_locations():
     result = reconcile_cdn_inbound(Client(), [manual], fake_decrypt)
     assert result["updated"] == result["created"] == 0
     assert result["cdn_managed_emails"] == []
+
+
+def test_sync_manual_only_cdn_never_routes_warp_to_missing_cdn(monkeypatch):
+    import torpanel.xui as xui_module
+
+    settings = cdn_settings()
+    manual = location("fr-manual", "France", "FR", 31005)
+    manual["xui_auto_client"] = False
+    manual["inbound_tags"] = ["existing-vless"]
+    original = {
+        "outbounds": [{"tag": "warp", "protocol": "wireguard", "settings": {}}],
+        "routing": {"rules": []},
+    }
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+            self.saved = None
+        def list_inbounds(self):
+            return [{"id": 22, "tag": "existing-vless", "port": 10005}]
+        def get_xray_config(self):
+            return original
+        def ensure_warp_outbound(self, config):
+            return config, False
+        def update_xray_config(self, config):
+            self.saved = config
+        def get_web_cert_files(self):
+            raise AssertionError("No CDN inbound or cert needed for existing users")
+        def add_inbound(self, payload):
+            raise AssertionError("Unexpected generated user")
+
+    client = Client()
+    values = {
+        "xui_cdn_runtime_tag": CDN_MANAGED_TAG,
+        "xui_warp_enabled": "1",
+        "xui_warp_mode": "domains",
+        "xui_warp_domains_json": '["example.com"]',
+        "xui_warp_inbound_tags": '["torloc-cdn"]',
+    }
+    monkeypatch.setattr(xui_module, "current_settings", lambda: settings)
+    monkeypatch.setattr(xui_module, "XUIClient", lambda settings: client)
+    monkeypatch.setattr(
+        xui_module, "get_setting", lambda key, default="": values.get(key, default)
+    )
+    monkeypatch.setattr(xui_module, "set_setting", lambda key, value: None)
+
+    result = xui_module.sync_locations([manual], fake_decrypt)
+    assert result["created"] == 0
+    assert client.saved is not None
+    rules = client.saved["routing"]["rules"]
+    assert len(rules) == 1
+    assert rules[0]["inboundTag"] == ["existing-vless"]
+    assert "user" not in rules[0]
+    assert not any(rule.get("ruleTag") == "torloc-warp" for rule in rules)

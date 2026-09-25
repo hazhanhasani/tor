@@ -98,7 +98,7 @@ def _migrate(db: sqlite3.Connection) -> None:
     db.execute("UPDATE locations SET ss_method='vless-reality' WHERE ss_method<>'vless-reality'")
 
 
-_SCHEMA_READY = False
+_SCHEMA_READY_FOR = None
 _SCHEMA_LOCK = threading.Lock()
 
 
@@ -109,18 +109,18 @@ def connect():
     Executing DDL for each get_setting() caused needless SQLite write locks
     while a background sync was updating its status.
     """
-    global _SCHEMA_READY
+    global _SCHEMA_READY_FOR
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=15)
     db.row_factory = sqlite3.Row
     try:
-        if not _SCHEMA_READY:
+        if _SCHEMA_READY_FOR != DB_PATH:
             with _SCHEMA_LOCK:
-                if not _SCHEMA_READY:
+                if _SCHEMA_READY_FOR != DB_PATH:
                     db.executescript(SCHEMA)
                     _migrate(db)
                     db.commit()
-                    _SCHEMA_READY = True
+                    _SCHEMA_READY_FOR = DB_PATH
         yield db
         db.commit()
     finally:

@@ -10,6 +10,7 @@ def test_create_location_reuses_selected_inbound_without_autoclient(monkeypatch)
     monkeypatch.setattr(app_module, "init_db", lambda: None)
     monkeypatch.setattr(app_module, "validate_csrf", lambda value: None)
     monkeypatch.setattr(app_module, "encrypt_secret", lambda value: value)
+    monkeypatch.setattr(app_module, "next_socks_port", lambda: 19050)
     monkeypatch.setattr(app_module, "list_locations", lambda: [])
     monkeypatch.setattr(app_module, "list_tunnel_links", lambda: [])
     monkeypatch.setattr(

@@ -16,3 +16,20 @@ def test_sync_job_state_reads_persisted_json(monkeypatch):
         lambda key, default="": json.dumps(payload),
     )
     assert sync_job.sync_job_state() == payload
+
+
+def test_second_launch_is_ignored_while_worker_pid_is_alive(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(sync_job, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(sync_job, "_LOCK_PATH", tmp_path / "sync.lock")
+    monkeypatch.setattr(sync_job, "sync_job_state", lambda: {
+        "status": "running", "pid": os.getpid(),
+    })
+    monkeypatch.setattr(
+        sync_job.subprocess, "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("second worker must not be started")
+        ),
+    )
+    assert sync_job.launch_sync_job() is False

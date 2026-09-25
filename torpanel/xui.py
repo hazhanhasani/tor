@@ -823,7 +823,10 @@ def sync_locations(
                 + ", ".join(missing)
             )
     inbound_stats = reconcile_managed_inbounds(client, locations, decrypt_password)
-    managed_cdn_tag = str(inbound_stats.get("cdn_inbound_tag") or CDN_MANAGED_TAG)
+    # An empty tag means a manual-only location without a shared CDN inbound.
+    # Do not silently substitute a nonexistent torloc-cdn tag.
+    raw_cdn_tag = inbound_stats.get("cdn_inbound_tag")
+    managed_cdn_tag = CDN_MANAGED_TAG if raw_cdn_tag is None else str(raw_cdn_tag)
     if settings.managed_inbound_mode == "cloudflare":
         set_setting("xui_cdn_runtime_tag", managed_cdn_tag)
         cdn_port = int(inbound_stats.get("cdn_port") or settings.cdn_port)

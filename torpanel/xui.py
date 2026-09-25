@@ -714,7 +714,10 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
 
     managed_rules: list[dict[str, Any]] = []
     warp_tags = list(dict.fromkeys(str(x) for x in (warp_inbound_tags or []) if x))
-    if warp_enabled and not warp_tags and xui_settings and xui_settings.managed_inbound_mode == "cloudflare":
+    if (
+        warp_enabled and not warp_tags and managed_cdn_tag
+        and xui_settings and xui_settings.managed_inbound_mode == "cloudflare"
+    ):
         warp_tags = [managed_cdn_tag]
     if warp_enabled and warp_tags:
         warp_rule: dict[str, Any] = {
@@ -854,7 +857,7 @@ def sync_locations(
                 value = managed_cdn_tag
             if value and value not in normalized_tags:
                 normalized_tags.append(value)
-        if warp_enabled and not normalized_tags:
+        if warp_enabled and not normalized_tags and managed_cdn_tag:
             normalized_tags = [managed_cdn_tag]
         warp_inbound_tags = normalized_tags
         set_setting(

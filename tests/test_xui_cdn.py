@@ -226,7 +226,7 @@ def test_reconcile_adopts_existing_managed_remark_with_generated_tag(monkeypatch
                 "protocol": "vless",
                 "port": 2087,
                 "enable": True,
-                "settings": {},
+                "settings": {"clients": [], "decryption": "none", "encryption": "none"},
                 "streamSettings": {},
                 "sniffing": {},
             }
@@ -311,7 +311,7 @@ def test_reconcile_moves_existing_managed_inbound_away_from_conflicting_port(mon
                 "protocol": "vless",
                 "port": 10000,
                 "enable": True,
-                "settings": {},
+                "settings": {"clients": [], "decryption": "none", "encryption": "none"},
                 "streamSettings": {},
                 "sniffing": {},
             }
@@ -440,7 +440,7 @@ def test_sanaei_385_failed_create_keeps_legacy_inbound_and_port(monkeypatch):
     assert len(set(client.ports)) == 5  # 2053 is reserved for the panel itself.
 
 
-def test_sanaei_385_removes_legacy_only_after_successful_cdn_create(monkeypatch):
+def test_sanaei_385_retains_legacy_after_successful_cdn_create(monkeypatch):
     monkeypatch.setattr(xui_cdn, "set_setting", lambda k, v: None)
 
     class FakeClient:
@@ -467,9 +467,10 @@ def test_sanaei_385_removes_legacy_only_after_successful_cdn_create(monkeypatch)
     client = FakeClient()
     result = reconcile_cdn_inbound(client, [location()], fake_decrypt)
     assert result["created"] == 1
-    assert result["removed"] == 1
-    assert client.events == ["create", "delete"]
-    assert [row["id"] for row in client.rows] == [8]
+    assert result["removed"] == 0
+    assert client.events == ["create"]
+    assert [row["id"] for row in client.rows] == [7, 8]
+    assert result["preserved_legacy_tags"] == ["torloc-in-de-123"]
 
 
 
@@ -532,3 +533,77 @@ def test_cdn_reconcile_preserves_operator_clients(monkeypatch):
     emails = [row["email"] for row in client.updated["settings"]["clients"]]
     assert "operator@example.com" in emails
     assert managed_client_email(loc) in emails
+
+
+def test_cdn_merge_does_not_reset_managed_clients_or_subscription_ids():
+    loc = location()
+    settings = cdn_settings()
+    certs = {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}
+    expected = build_cdn_inbound_payload([loc], settings, certs, fake_decrypt)
+    live = dict(expected["settings"]["clients"][0])
+    live.update(
+        {"enable": False, "totalGB": 987654, "expiryTime": 77777,
+         "subId": "original-subscription", "comment": "keep this customer"}
+    )
+    current = {
+        **expected,
+        "settings": {
+            **expected["settings"],
+            "clients": [
+                {"email": "other@domain.test", "id": "external-user", "enable": True},
+                live,
+            ],
+        },
+    }
+    merged = xui_cdn.merge_preserved_cdn_clients(current, expected)
+    by_email = {row["email"]: row for row in merged["settings"]["clients"]}
+    assert by_email[live["email"]] == live
+    assert by_email["other@domain.test"]["id"] == "external-user"
+
+
+def test_no_enabled_locations_disables_generated_clients_without_deleting_inbound():
+    settings = cdn_settings()
+    loc = location()
+    base = build_cdn_inbound_payload(
+        [loc], settings,
+        {"webCertFile": "/cert.pem", "webKeyFile": "/key.pem"}, fake_decrypt
+    )
+
+    class Client:
+        def __init__(self):
+            self.settings = settings
+            self.updated = None
+            self.deleted = []
+
+        def list_inbounds(self):
+            return [{"id": 3, "tag": CDN_MANAGED_TAG,
+                     "remark": CDN_MANAGED_REMARK, "port": 8443}]
+
+        def get_inbound(self, inbound_id):
+            return {
+                **base, "id": inbound_id,
+                "settings": {
+                    **base["settings"],
+                    "clients": [
+                        *base["settings"]["clients"],
+                        {"id": "external", "email": "manual@example.com", "enable": True},
+                    ],
+                },
+            }
+
+        def update_inbound(self, inbound_id, payload):
+            self.updated = payload
+
+        def delete_inbound(self, inbound_id):
+            self.deleted.append(inbound_id)
+
+    client = Client()
+    result = reconcile_cdn_inbound(client, [], fake_decrypt)
+    assert result["removed"] == 0
+    assert result["updated"] == 1
+    assert client.deleted == []
+    by_email = {
+        row["email"]: row for row in client.updated["settings"]["clients"]
+    }
+    assert not by_email[managed_client_email(loc)]["enable"]
+    assert by_email["manual@example.com"]["enable"]

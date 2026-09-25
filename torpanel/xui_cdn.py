@@ -234,17 +234,39 @@ def merge_preserved_cdn_clients(
     """Keep operator-created clients while reconciling only TLM clients."""
     merged = copy.deepcopy(expected)
     current_settings = _obj(current.get("settings"))
+    if not isinstance(current_settings.get("clients"), list):
+        raise CDNProfileError(
+            "3x-ui فهرست کاربران CDN را برنگرداند؛ Sync بدون حذف کاربران متوقف شد."
+        )
+    current_clients = current_settings["clients"]
+    if not all(isinstance(row, dict) for row in current_clients):
+        raise CDNProfileError("فهرست کاربران CDN ناقص است؛ Sync متوقف شد.")
+    existing_by_email = {
+        str(row.get("email") or "").strip().lower(): row
+        for row in current_clients if _is_managed_location_client(row)
+    }
+    managed_clients = []
+    desired_emails = set()
+    for generated in (expected.get("settings", {}).get("clients") or []):
+        email = str(generated.get("email") or "").strip().lower()
+        desired_emails.add(email)
+        # Retain the exact live UUID, subscription ID and user limits.
+        managed_clients.append(copy.deepcopy(existing_by_email.get(email, generated)))
+    # Orphaned managed users are disabled, not deleted; they can be recovered.
+    stale = [
+        {**copy.deepcopy(row), "enable": False}
+        for row in current_clients
+        if _is_managed_location_client(row)
+        and str(row.get("email") or "").strip().lower() not in desired_emails
+    ]
     foreign_clients = [
-        copy.deepcopy(row)
-        for row in (current_settings.get("clients") or [])
-        if isinstance(row, dict) and not _is_managed_location_client(row)
+        copy.deepcopy(row) for row in current_clients
+        if not _is_managed_location_client(row)
     ]
-    managed_clients = [
-        copy.deepcopy(row)
-        for row in (expected.get("settings", {}).get("clients") or [])
-        if isinstance(row, dict)
-    ]
-    merged["settings"]["clients"] = foreign_clients + managed_clients
+    merged["settings"] = copy.deepcopy(current_settings)
+    merged["settings"]["decryption"] = "none"
+    merged["settings"]["encryption"] = "none"
+    merged["settings"]["clients"] = foreign_clients + managed_clients + stale
     for key in ("shareAddrStrategy", "shareAddr", "subSortIndex"):
         if key in current:
             merged[key] = copy.deepcopy(current[key])
@@ -431,15 +453,35 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
             desired_port = existing_port
 
     if not enabled:
-        removed = 0
-        for row in options:
-            tag = str(row.get("tag") or "")
-            if (tag.startswith(LEGACY_MANAGED_PREFIX) or _is_managed_cdn_row(row)) and row.get("id") is not None:
-                client.delete_inbound(int(row["id"]))
-                removed += 1
+        # Never delete the shared inbound: it may also contain real operator
+        # clients. Disable only synthetic clients for inactive locations.
+        if existing is not None and _row_id(existing) is not None:
+            inbound_id = _row_id(existing)
+            current = client.get_inbound(inbound_id)
+            settings_obj = _obj(current.get("settings"))
+            clients = settings_obj.get("clients")
+            if not isinstance(clients, list) or not all(isinstance(row, dict) for row in clients):
+                raise CDNProfileError("فهرست کاربران CDN ناقص است؛ Sync متوقف شد.")
+            if any(_is_managed_location_client(row) and row.get("enable", True) for row in clients):
+                updated_payload = copy.deepcopy(current)
+                settings_obj["clients"] = [
+                    {**row, "enable": False} if _is_managed_location_client(row) else row
+                    for row in clients
+                ]
+                updated_payload["settings"] = settings_obj
+                client.update_inbound(inbound_id, updated_payload)
+                changed = 1
+            else:
+                changed = 0
+            return {
+                "created": 0, "updated": changed, "removed": 0,
+                "cdn_clients": 0, "cdn_inbound_tag": str(existing.get("tag") or ""),
+                "cdn_port": desired_port, "preserved_legacy_tags": [],
+            }
         return {
-            "created": 0, "updated": 0, "removed": removed,
-            "cdn_clients": 0, "cdn_inbound_tag": "", "cdn_port": desired_port,
+            "created": 0, "updated": 0, "removed": 0,
+            "cdn_clients": 0, "cdn_inbound_tag": "",
+            "cdn_port": desired_port, "preserved_legacy_tags": [],
         }
 
     existing_id = _row_id(existing) if existing else None
@@ -514,18 +556,18 @@ def reconcile_cdn_inbound(client: Any, locations: list[dict[str, Any]], decrypt_
     if client.settings.cdn_port != original_port:
         set_setting("xui_cdn_port", str(client.settings.cdn_port))
 
-    removed = 0
-    for row in client.list_inbounds():
-        tag = str(row.get("tag") or "")
-        redundant_cdn = _is_managed_cdn_row(row) and _row_id(row) != existing_id
-        if (tag.startswith(LEGACY_MANAGED_PREFIX) or redundant_cdn) and row.get("id") is not None:
-            client.delete_inbound(int(row["id"]))
-            removed += 1
-
+    # Legacy inbounds may still have paying users. Keep them and preserve
+    # their routes during the CDN migration. Cleanup must be explicit.
+    retained_legacy_tags = [
+        str(row.get("tag"))
+        for row in client.list_inbounds()
+        if str(row.get("tag") or "").startswith(LEGACY_MANAGED_PREFIX)
+    ]
     return {
-        "created": created, "updated": updated, "removed": removed,
+        "created": created, "updated": updated, "removed": 0,
         "cdn_clients": len(enabled), "cdn_inbound_tag": actual_tag,
         "cdn_port": client.settings.cdn_port,
+        "preserved_legacy_tags": retained_legacy_tags,
     }
 
 

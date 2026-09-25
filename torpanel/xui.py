@@ -450,23 +450,33 @@ def _repair_existing_managed_payload(
     their Reality/Vision flow, and remove only our synthetic bootstrap client
     once real clients exist.
     """
-    repaired = copy.deepcopy(expected)
+    repaired = copy.deepcopy(current)
+    for key, value in expected.items():
+        if key != "settings":
+            repaired[key] = copy.deepcopy(value)
     current_settings = _json_obj(current.get("settings"))
+    if not isinstance(current_settings.get("clients"), list):
+        raise XUIError(
+            "3x-ui فهرست کاربران این Inbound را کامل برنگرداند؛ "
+            "برای جلوگیری از حذف کاربران، Sync متوقف شد."
+        )
     current_clients = [
         copy.deepcopy(row)
-        for row in (current_settings.get("clients") or [])
+        for row in current_settings["clients"]
         if isinstance(row, dict)
     ]
-    real_clients: list[dict[str, Any]] = []
+    if len(current_clients) != len(current_settings["clients"]):
+        raise XUIError("فهرست کاربران Inbound معتبر نیست؛ Sync بدون تغییر متوقف شد.")
     for row in current_clients:
-        if _is_tlm_generated_client(row):
-            continue
-        if row.get("id") and row.get("email"):
+        if row.get("id") and row.get("email") and not _is_tlm_generated_client(row):
             row["flow"] = REALITY_FLOW
-        real_clients.append(row)
-
-    if real_clients:
-        repaired["settings"]["clients"] = real_clients
+    repaired["settings"] = copy.deepcopy(current_settings)
+    repaired["settings"]["decryption"] = "none"
+    repaired["settings"]["encryption"] = "none"
+    # Never remove even a generated client: an existing subscription may use it.
+    repaired["settings"]["clients"] = (
+        current_clients if current_clients else copy.deepcopy(expected["settings"]["clients"])
+    )
 
     # These are panel/subscription presentation fields, not Tor transport
     # ownership. Preserve them when 3x-ui returns them so Sync does not reset
@@ -586,52 +596,54 @@ def _choose_inbound_port(location: dict[str, Any], options: list[dict[str, Any]]
     raise XUIError("هیچ پورت آزاد مناسبی برای Inbound مدیریت‌شده پیدا نشد.")
 
 
-def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, int]:
+def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
     if client.settings.managed_inbound_mode == "cloudflare":
         return reconcile_cdn_inbound(client, locations, decrypt_password)
 
     options = client.list_inbounds()
-    desired_tags = {managed_inbound_tag(loc) for loc in locations if loc.get("enabled")}
-
-    removed = 0
-    for row in list(options):
-        tag = str(row.get("tag") or "")
-        if tag.startswith(MANAGED_INBOUND_PREFIX) and tag not in desired_tags:
-            if row.get("id") is not None:
-                client.delete_inbound(int(row["id"]))
-                removed += 1
-
-    if removed:
-        options = client.list_inbounds()
-
+    # A normal Sync must never delete an inbound: existing clients and links
+    # may still depend on it, even after a location has been disabled.
     created = updated = 0
+    managed_tags: list[str] = []
     for location in locations:
         if not location.get("enabled"):
             continue
-        _choose_inbound_port(location, options, locations)
         tag = managed_inbound_tag(location)
-        expected = managed_inbound_payload(location, decrypt_password)
         existing = next((row for row in options if row.get("tag") == tag), None)
+        manual_tags = [str(x) for x in (location.get("inbound_tags") or []) if x]
+
+        # When the operator selected existing 3x-ui inbounds, route those
+        # inbounds directly instead of adding another inbound and user.
+        if existing is None and manual_tags:
+            continue
         if existing is None:
+            _choose_inbound_port(location, options, locations)
+            expected = managed_inbound_payload(location, decrypt_password)
             client.add_inbound(expected)
             created += 1
+            managed_tags.append(tag)
             options.append({
-                "id": None,
-                "tag": tag,
-                "remark": expected["remark"],
-                "protocol": expected["protocol"],
-                "port": expected["port"],
+                "id": None, "tag": tag, "remark": expected["remark"],
+                "protocol": expected["protocol"], "port": expected["port"],
             })
             continue
+
+        managed_tags.append(tag)
         if existing.get("id") is None:
-            continue
+            raise XUIError("Inbound موجود شناسه معتبر ندارد؛ از تغییر آن صرف‌نظر شد.")
+        _choose_inbound_port(location, options, locations)
         current = client.get_inbound(int(existing["id"]))
-        expected = _repair_existing_managed_payload(current, expected)
+        expected = _repair_existing_managed_payload(
+            current, managed_inbound_payload(location, decrypt_password)
+        )
         if not _inbound_matches(current, expected):
             client.update_inbound(int(existing["id"]), expected)
             updated += 1
-    return {"created": created, "updated": updated, "removed": removed}
 
+    return {
+        "created": created, "updated": updated, "removed": 0,
+        "managed_tags": managed_tags,
+    }
 
 def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]],
                         gateway_host: str, decrypt_password,
@@ -640,7 +652,9 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
                         warp_mode: str = "domains",
                         warp_domains: list[str] | None = None,
                         warp_inbound_tags: list[str] | None = None,
-                        managed_cdn_tag: str = CDN_MANAGED_TAG) -> dict[str, Any]:
+                        managed_cdn_tag: str = CDN_MANAGED_TAG,
+                        managed_inbound_tags: set[str] | None = None,
+                        preserved_legacy_tags: set[str] | None = None) -> dict[str, Any]:
     if not gateway_host:
         raise XUIError("Gateway host/IP is not configured")
     config = copy.deepcopy(original)
@@ -692,14 +706,21 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
                 "user": [managed_client_email(loc)],
                 "outboundTag": tag,
             })
-            if manual_tags:
+            legacy_tag = managed_inbound_tag(loc)
+            legacy_tags = (
+                [legacy_tag] if preserved_legacy_tags and legacy_tag in preserved_legacy_tags else []
+            )
+            existing_tags = list(dict.fromkeys([*manual_tags, *legacy_tags]))
+            if existing_tags:
                 managed_rules.append({
                     "type": "field",
-                    "inboundTag": manual_tags,
+                    "inboundTag": existing_tags,
                     "outboundTag": tag,
                 })
         else:
-            route_tags = [managed_inbound_tag(loc), *manual_tags]
+            auto_tag = managed_inbound_tag(loc)
+            use_auto = managed_inbound_tags is None or auto_tag in managed_inbound_tags
+            route_tags = [*([auto_tag] if use_auto else []), *manual_tags]
             route_tags = list(dict.fromkeys(str(x) for x in route_tags if x))
             if route_tags:
                 managed_rules.append({
@@ -719,7 +740,12 @@ def build_synced_config(original: dict[str, Any], locations: list[dict[str, Any]
     return config
 
 
-def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
+def sync_locations(
+    locations: list[dict[str, Any]],
+    decrypt_password,
+    *,
+    tunnel_links: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     settings = current_settings()
     if not settings.base_url.strip("/") or not settings.api_token:
         raise XUIError("3x-ui URL/API token is not configured")
@@ -732,7 +758,8 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         cdn_port = int(inbound_stats.get("cdn_port") or settings.cdn_port)
         settings.cdn_port = cdn_port
         set_setting("xui_cdn_port", str(cdn_port))
-    original = client.get_xray_config()
+    server_config = client.get_xray_config()
+    original = server_config
     warp_enabled = get_setting("xui_warp_enabled", "0") == "1"
     warp_mode = get_setting("xui_warp_mode", "domains") or "domains"
     try:
@@ -779,8 +806,14 @@ def sync_locations(locations: list[dict[str, Any]], decrypt_password) -> dict[st
         warp_domains=[str(x) for x in warp_domains],
         warp_inbound_tags=[str(x) for x in warp_inbound_tags],
         managed_cdn_tag=managed_cdn_tag,
+        managed_inbound_tags=set(inbound_stats.get("managed_tags") or []),
+        preserved_legacy_tags=set(inbound_stats.get("preserved_legacy_tags") or []),
     )
-    xray_updated = updated != original
+    # One Xray settings update for Tor, WARP and tunnel routes combined.
+    if tunnel_links is not None:
+        from .panel_sync import build_xui_hybrid_config
+        updated = build_xui_hybrid_config(updated, tunnel_links)
+    xray_updated = updated != server_config
     if xray_updated:
         client.update_xray_config(updated)
     inbound_stats["xray_updated"] = 1 if xray_updated else 0

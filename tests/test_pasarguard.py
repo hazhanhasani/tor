@@ -58,3 +58,58 @@ def test_xui_builds_hybrid_source_route(monkeypatch):
     _assert_current_freedom_schema(tunnel)
     assert config["routing"]["rules"][0]["outboundTag"] == "api"
     assert any(row.get("inboundTag") == ["in-a"] and row.get("outboundTag") == tunnel["tag"] for row in config["routing"]["rules"])
+
+
+def test_sync_all_panels_combines_xui_tor_and_tunnel_changes(monkeypatch):
+    called = []
+
+    monkeypatch.setattr(panel_sync, "xui_configured", lambda: True)
+    monkeypatch.setattr(panel_sync, "pasarguard_configured", lambda: False)
+    monkeypatch.setattr(panel_sync, "list_tunnel_links", lambda: [
+        {"uuid": "existing-tunnel", "enabled": True}
+    ])
+    monkeypatch.setattr(
+        panel_sync, "tunnel_panel_tags",
+        lambda uuid, provider: ["manual-inbound"] if provider == "xui" else [],
+    )
+
+    def sync_once(locations, decrypt_password, *, tunnel_links):
+        called.append(tunnel_links)
+        return {"xray_updated": 1, "created": 0, "removed": 0}
+
+    monkeypatch.setattr(panel_sync, "sync_locations", sync_once)
+    monkeypatch.setattr(
+        panel_sync, "sync_xui_hybrid",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("do not apply Xray configuration twice")
+        ),
+    )
+    results = panel_sync.sync_all_panels([], lambda x: x)
+    assert len(called) == 1
+    assert results["xui"]["ok"] is True
+    assert results["xui"]["tunnel_routes"] == 1
+
+
+def test_pasarguard_skips_write_and_restart_for_unchanged_config(monkeypatch):
+    settings = pg.PasarGuardSettings(
+        base_url="https://pg.example.com/", api_key="token", core_id=1,
+        verify_tls=True, restart_nodes=True, gateway_host="127.0.0.1",
+    )
+    monkeypatch.setattr(pg, "current_settings", lambda: settings)
+    monkeypatch.setattr(pg, "list_tunnel_links", lambda: [])
+
+    class Client:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def get_core(self):
+            return {"id": 1, "name": "core", "config": {
+                "inbounds": [], "outbounds": [], "routing": {"rules": []},
+            }}
+
+        def update_core(self, core, config):
+            raise AssertionError("no write or node restart on an unchanged config")
+
+    monkeypatch.setattr(pg, "PasarGuardClient", Client)
+    result = pg.sync_pasarguard([], lambda x: x)
+    assert result["core_updated"] == 0

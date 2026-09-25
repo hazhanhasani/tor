@@ -467,9 +467,8 @@ def _repair_existing_managed_payload(
     ]
     if len(current_clients) != len(current_settings["clients"]):
         raise XUIError("فهرست کاربران Inbound معتبر نیست؛ Sync بدون تغییر متوقف شد.")
-    for row in current_clients:
-        if row.get("id") and row.get("email") and not _is_tlm_generated_client(row):
-            row["flow"] = REALITY_FLOW
+    # Existing clients belong to the operator; their flow, UUID, quota,
+    # subscription ID and enabled state must never be rewritten by Sync.
     repaired["settings"] = copy.deepcopy(current_settings)
     repaired["settings"]["decryption"] = "none"
     repaired["settings"]["encryption"] = "none"
@@ -596,14 +595,34 @@ def _choose_inbound_port(location: dict[str, Any], options: list[dict[str, Any]]
     raise XUIError("هیچ پورت آزاد مناسبی برای Inbound مدیریت‌شده پیدا نشد.")
 
 
-def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]], decrypt_password) -> dict[str, Any]:
+def reconcile_managed_inbounds(
+    client: XUIClient, locations: list[dict[str, Any]], decrypt_password
+) -> dict[str, Any]:
     if client.settings.managed_inbound_mode == "cloudflare":
         return reconcile_cdn_inbound(client, locations, decrypt_password)
 
     options = client.list_inbounds()
-    # A normal Sync must never delete an inbound: existing clients and links
-    # may still depend on it, even after a location has been disabled.
-    created = updated = 0
+    existing_tags = {
+        str(row.get("tag") or "") for row in options
+        if str(row.get("tag") or "")
+    }
+    # Reject stale selections before adding or updating anything. Otherwise
+    # replacing the routing rules can silently detach every user on that tag.
+    requested_manual_tags = {
+        str(tag)
+        for loc in locations if loc.get("enabled")
+        for tag in (loc.get("inbound_tags") or [])
+        if tag
+    }
+    missing_tags = sorted(requested_manual_tags - existing_tags)
+    if missing_tags:
+        raise XUIError(
+            "Inboundهای انتخاب‌شده در 3x-ui پیدا نشدند؛ Sync بدون تغییر متوقف شد: "
+            + ", ".join(missing_tags)
+        )
+
+    created = updated = preserved = 0
+    warnings: list[str] = []
     managed_tags: list[str] = []
     for location in locations:
         if not location.get("enabled"):
@@ -612,10 +631,15 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
         existing = next((row for row in options if row.get("tag") == tag), None)
         manual_tags = [str(x) for x in (location.get("inbound_tags") or []) if x]
 
-        # When the operator selected existing 3x-ui inbounds, route those
-        # inbounds directly instead of adding another inbound and user.
-        if existing is None and manual_tags:
+        if manual_tags:
+            # A selected inbound already contains the user's real clients.
+            # Routing alone is sufficient: no synthetic inbound/client and
+            # no writes to the inbound (even if an older managed one exists).
+            if existing is not None:
+                managed_tags.append(tag)  # Preserve old live client routes.
+            preserved += len(manual_tags) + int(existing is not None)
             continue
+
         if existing is None:
             _choose_inbound_port(location, options, locations)
             expected = managed_inbound_payload(location, decrypt_password)
@@ -636,12 +660,28 @@ def reconcile_managed_inbounds(client: XUIClient, locations: list[dict[str, Any]
         expected = _repair_existing_managed_payload(
             current, managed_inbound_payload(location, decrypt_password)
         )
-        if not _inbound_matches(current, expected):
-            client.update_inbound(int(existing["id"]), expected)
-            updated += 1
+        if _inbound_matches(current, expected):
+            continue
+
+        current_clients = _json_obj(current.get("settings")).get("clients") or []
+        if any(
+            not _is_tlm_generated_client(row) for row in current_clients
+        ):
+            # 3x-ui's update API treats settings.clients as replacement data.
+            # Never risk removing paid users to repair transport defaults.
+            preserved += 1
+            warnings.append(
+                f"{tag}: تنظیمات اینباند با کاربران موجود دست‌نخورده حفظ شد؛ "
+                "برای تغییر Transport، ابتدا پشتیبان بگیرید."
+            )
+            continue
+
+        client.update_inbound(int(existing["id"]), expected)
+        updated += 1
 
     return {
         "created": created, "updated": updated, "removed": 0,
+        "preserved": preserved, "warnings": warnings,
         "managed_tags": managed_tags,
     }
 

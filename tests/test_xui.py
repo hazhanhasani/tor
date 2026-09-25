@@ -607,3 +607,46 @@ def test_sync_rejects_missing_selected_inbound_before_any_mutation():
     import pytest
     with pytest.raises(xui_module.XUIError, match="پیدا نشدند"):
         xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+
+
+def test_new_location_without_auto_opt_in_does_not_generate_client():
+    loc = {
+        "id": 25, "slug": "nl-manual", "name": "Netherlands",
+        "country_code": "NL", "enabled": True,
+        "gateway_port": 31001, "socks_port": 19050,
+        "xui_inbound_port": 0, "ss_password": "enc",
+        "inbound_tags": ["paid-users"], "xui_auto_client": False,
+    }
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return [{"id": 3, "tag": "paid-users", "port": 443}]
+        def add_inbound(self, payload):
+            raise AssertionError("New manual location must not add a client")
+        def update_inbound(self, inbound_id, payload):
+            raise AssertionError("Existing customer inbound must not change")
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == result["updated"] == 0
+    original = {"outbounds": [], "routing": {"rules": []}}
+    config = build_synced_config(
+        original, [loc], "host", fake_decrypt,
+        managed_inbound_tags=set(result["managed_tags"]),
+    )
+    assert config["routing"]["rules"][0]["inboundTag"] == ["paid-users"]
+
+
+def test_new_location_without_manual_tag_or_opt_in_never_provisions_auto_user():
+    loc = {
+        "id": 26, "slug": "nl-no-user", "name": "Netherlands",
+        "country_code": "NL", "enabled": True,
+        "inbound_tags": [], "xui_auto_client": False,
+    }
+    class Client:
+        settings = XUISettings("https://panel.example.com/", "token", "host", True)
+        def list_inbounds(self):
+            return []
+        def add_inbound(self, payload):
+            raise AssertionError("Auto-client creation requires explicit opt-in")
+    result = xui_module.reconcile_managed_inbounds(Client(), [loc], fake_decrypt)
+    assert result["created"] == 0
+    assert result["managed_tags"] == []
